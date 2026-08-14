@@ -195,61 +195,6 @@ code {
   font-size: 0.92rem;
 }
 
-/* 메뉴 뽑기 */
-.picker-result {
-  margin: 0.5rem 0 1rem;
-  padding: 1.5rem 1rem;
-  background: var(--ok-bg);
-  border-radius: var(--radius);
-  color: var(--ok);
-  font-size: 1.75rem;
-  font-weight: 700;
-  text-align: center;
-  overflow-wrap: anywhere;
-}
-
-.picker-button {
-  width: 100%;
-  padding: 0.85rem 1rem;
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: #ffffff;
-  font-family: inherit;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.picker-button:hover {
-  filter: brightness(1.08);
-}
-
-.picker-count {
-  margin: 0.75rem 0 0;
-  color: var(--text-muted);
-  font-size: 0.9rem;
-  text-align: center;
-}
-
-/* 후보 메뉴 목록 */
-.menu-chips {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.menu-chip {
-  padding: 0.3rem 0.7rem;
-  background: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 0.9rem;
-}
-
 /* 푸터 */
 .footer {
   color: var(--text-muted);
@@ -273,4 +218,556 @@ code {
     grid-template-columns: 1fr;
     gap: 0.15rem;
   }
+}
+
+/* ── 미니게임 공통 ───────────────────────────────────────── */
+
+/* 목록으로 돌아가는 링크 */
+.back-link {
+  align-self: flex-start;
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.back-link:hover {
+  color: var(--accent);
+}
+
+/* 메인 화면의 게임 카드 목록 */
+.game-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.game-card {
+  display: grid;
+  grid-template-columns: 2.75rem 1fr auto;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.9rem 1rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: inherit;
+  text-decoration: none;
+}
+
+.game-card:hover {
+  border-color: var(--accent);
+}
+
+.game-icon {
+  font-size: 1.75rem;
+  line-height: 1;
+  text-align: center;
+}
+
+.game-body {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.game-name {
+  font-weight: 700;
+}
+
+.game-tagline {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+}
+
+.game-kind {
+  flex-shrink: 0;
+  padding: 0.2rem 0.55rem;
+  background: var(--code-bg);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+/* 접어 둘 수 있는 정보 칸 */
+.details-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.35rem 1.25rem;
+}
+
+.details-summary {
+  padding: 0.7rem 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.details-body {
+  display: grid;
+  gap: 1rem;
+  padding-bottom: 1rem;
+}
+
+/* 공정성 안내 */
+.fairness-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* 버튼 */
+.button {
+  padding: 0.75rem 1.1rem;
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button-quiet {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.button-wide {
+  width: 100%;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* 입력 */
+.field-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.name-input,
+.count-input,
+.text-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.name-input {
+  resize: vertical;
+}
+
+.count-input {
+  width: 6rem;
+}
+
+.quick-fill {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.participant-count {
+  margin: 1rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.notice-list {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.warning-note {
+  margin: 0.75rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* 결과 */
+.result-placeholder {
+  margin: 0;
+  padding: 1.25rem 1rem;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.result-headline {
+  margin: 0;
+  padding: 1.4rem 1rem;
+  background: var(--ok-bg);
+  border-radius: var(--radius);
+  color: var(--ok);
+  font-size: clamp(1.35rem, 5vw, 1.75rem);
+  font-weight: 700;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.result-list {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.result-line {
+  padding: 0.45rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.copy-note {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* 체크박스 줄 */
+.checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+/* ── 제비 뽑기 ───────────────────────────────────────────── */
+.draw-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(5.25rem, 1fr));
+  gap: 0.6rem;
+}
+
+.draw-card {
+  aspect-ratio: 3 / 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.4rem;
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    transform 0.25s ease,
+    background 0.25s ease;
+}
+
+.draw-card:hover:not(:disabled) {
+  transform: translateY(-3px);
+}
+
+.draw-card-open {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text-muted);
+  cursor: default;
+  opacity: 1;
+}
+
+.draw-card-win {
+  background: var(--ok-bg);
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.draw-mark {
+  font-size: 1.05rem;
+  line-height: 1.2;
+}
+
+.draw-owner {
+  max-width: 100%;
+  font-size: 0.75rem;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* ── 원판 돌리기 ─────────────────────────────────────────── */
+.wheel-stage {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 0.75rem;
+}
+
+.wheel-svg {
+  width: min(100%, 300px);
+  height: auto;
+}
+
+.wheel-pointer {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 1;
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-top: 18px solid var(--text);
+  transform: translateX(-50%);
+}
+
+.wheel-label {
+  fill: #ffffff;
+  font-family: inherit;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.35);
+  stroke-width: 2px;
+}
+
+.wheel-hub {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 2px;
+}
+
+.wheel-empty {
+  fill: var(--code-bg);
+  stroke: var(--border);
+  stroke-width: 2px;
+}
+
+/* ── 순서 · 팀 나누기 ────────────────────────────────────── */
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.mode-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+/* ── 사다리 타기 ─────────────────────────────────────────── */
+.ladder-scroll {
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+}
+
+.ladder-board {
+  margin: 0 auto;
+}
+
+.ladder-labels {
+  position: relative;
+  height: 2.4rem;
+}
+
+.ladder-name,
+.ladder-item {
+  position: absolute;
+  top: 0;
+  width: 3.5rem;
+  padding: 0.35rem 0.2rem;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+}
+
+.ladder-name {
+  background: var(--accent);
+  border: 1px solid transparent;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.ladder-name:hover {
+  filter: brightness(1.1);
+}
+
+.ladder-name-done {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.ladder-item {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.ladder-item-done {
+  background: var(--ok-bg);
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.ladder-svg {
+  display: block;
+}
+
+.ladder-line {
+  stroke: var(--border);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.ladder-path-done,
+.ladder-trace {
+  fill: none;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ladder-path-done {
+  opacity: 0.45;
+}
+
+.ladder-trace {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: ladder-draw 1.4s ease-out forwards;
+}
+
+@keyframes ladder-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* 움직임을 줄이도록 설정한 사용자에게는 애니메이션을 거의 없앱니다. */
+@media (prefers-reduced-motion: reduce) {
+  .ladder-trace {
+    animation-duration: 0.01s;
+  }
+
+  .draw-card {
+    transition: none;
+  }
+}
+
+/* ── 마블 룰렛 ───────────────────────────────────────────── */
+.marble-stage {
+  position: relative;
+}
+
+.marble-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.marble-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  text-align: center;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* 사다리 — 세로줄에 참가자별 색 */
+.ladder-line-vertical {
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.4;
+}
+
+/* 마블 룰렛 — 공 색 고르기 */
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.color-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.color-input {
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.color-input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+
+.color-name {
+  min-width: 0;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
