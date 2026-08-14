@@ -1,0 +1,664 @@
+# EC2 자동 배포입니다.
+# main 브랜치에 Push 하면 GitHub 이 검사를 먼저 돌리고, 통과했을 때만 EC2 로 배포합니다.
+#
+# 흐름:
+#   [GitHub]  검사 -> Docker 이미지 빌드 -> 이미지를 SSH 로 EC2 에 전송
+#   [EC2]     받은 이미지로 실행만 (빌드하지 않음)
+#
+# EC2 에서 빌드하지 않는 이유:
+#   서버가 vCPU 1개 / 메모리 2GB 라 Next.js 빌드 도중 멈춰버립니다.
+#   무거운 일은 GitHub 러너(vCPU 4개 / 메모리 16GB)에서 처리합니다.
+#
+# 이 파일에는 서버 주소, 계정 이름, SSH 개인키를 절대 직접 적지 마세요.
+# 세 값 모두 GitHub 저장소의 Settings > Secrets and variables > Actions 에 등록해서 씁니다.
+#   DEPLOY_HOST     EC2 공인 IPv4 또는 접속 가능한 호스트 이름
+#   DEPLOY_USER     EC2 접속 계정 (Amazon Linux 는 보통 ec2-user)
+#   DEPLOY_SSH_KEY  EC2 의 authorized_keys 에 등록된 공개키와 짝을 이루는 개인키
+#
+# 아래 한 가지는 비밀값이 아니므로 Secrets 가 아니라 Variables 탭에 등록합니다.
+#   BASE_DOMAIN     모든 프로젝트가 공유하는 베이스 도메인 (예: ai.mycompany.co.kr)
+#                   접속 주소는 <project.json 의 id>.<BASE_DOMAIN> 이 됩니다.
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  # Actions 탭에서 버튼으로 직접 실행할 수도 있습니다.
+  workflow_dispatch:
+
+# 배포는 도중에 끊기면 서버가 어중간한 상태로 남습니다.
+# 그래서 연속 Push 때 앞선 실행을 취소하지 않고, 순서대로 기다리게 합니다.
+concurrency:
+  group: deploy-ec2-${{ github.ref }}
+  cancel-in-progress: false
+
+# 이 워크플로는 코드를 읽기만 하면 됩니다.
+permissions:
+  contents: read
+
+env:
+  # EC2 안에서 모든 프로젝트가 들어가는 상위 폴더입니다.
+  REMOTE_ROOT: /srv/company-ai/projects
+  # compose.yaml 에 정의된 서비스 이름입니다.
+  APP_SERVICE: app
+  # 운영에서는 로컬용 compose.yaml 위에 compose.prod.yaml 을 겹쳐서 씁니다.
+  # 겹치면 3000 번 게시가 취소되고 Traefik 라벨과 web 네트워크가 붙습니다.
+  COMPOSE_FILES: -f compose.yaml -f compose.prod.yaml
+  # 모든 ssh / rsync 가 함께 쓰는 접속 옵션입니다.
+  # BatchMode=yes         비밀번호를 물어보지 않고 바로 실패합니다 (워크플로가 멈추지 않게).
+  # StrictHostKeyChecking=yes  아래에서 등록한 호스트 키와 다르면 접속하지 않습니다.
+  SSH_OPTS: -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15
+
+jobs:
+  deploy:
+    name: 검사 후 EC2 배포
+    runs-on: ubuntu-latest
+
+    steps:
+      # 외부 액션은 GitHub 공식 액션(actions/*)만 사용합니다.
+      - name: 코드 내려받기
+        uses: actions/checkout@v5
+
+      - name: Node.js 22 설정
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: 의존성 설치
+        run: npm ci
+
+      # validate.yml 에서도 검사하지만, 배포 워크플로가 스스로 안전장치를 갖도록 여기서도 검사합니다.
+      # 검사가 실패하면 아래 배포 단계는 실행되지 않습니다.
+      - name: 프로젝트 검사
+        run: npm run check
+
+      # 접속 주소는 project.json 의 id 와 BASE_DOMAIN 으로 정해집니다.
+      # 직원은 id 만 바꾸면 되고, compose 파일은 전 직원이 동일하게 유지됩니다.
+      - name: 접속 주소 결정 및 project.json 갱신
+        env:
+          BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BASE_DOMAIN:-}" ]; then
+            echo "::error::BASE_DOMAIN 이 비어 있습니다. 저장소의 Settings > Secrets and variables > Actions > Variables 에 등록하세요."
+            exit 1
+          fi
+
+          # 예시 도메인이 그대로 남아 있으면 인증서가 없어 접속이 안 됩니다. 미리 멈춥니다.
+          case "$BASE_DOMAIN" in
+            *example.com|*example.org|*example.net|localhost)
+              echo "::error::BASE_DOMAIN 이 예시 도메인($BASE_DOMAIN)입니다. 실제 도메인으로 바꾸세요."
+              exit 1
+              ;;
+          esac
+
+          if [[ ! "$BASE_DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+            echo "::error::BASE_DOMAIN 형식이 올바르지 않습니다: $BASE_DOMAIN"
+            exit 1
+          fi
+
+          # id 는 npm run check 의 validate:project 가 이미 검사했지만,
+          # 이 값이 그대로 Traefik 라우터 이름과 주소가 되므로 한 번 더 확인합니다.
+          PROJECT_ID="$(node -p "require('./project.json').id")"
+
+          if [[ ! "$PROJECT_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::project.json 의 id 형식이 올바르지 않습니다: $PROJECT_ID"
+            exit 1
+          fi
+
+          APP_HOST="${PROJECT_ID}.${BASE_DOMAIN}"
+
+          # project.json 의 domain 을 실제 접속 주소로 맞춰 둡니다.
+          # 화면에 표시되는 주소와 실제 주소가 어긋나지 않게 하기 위한 것으로,
+          # 저장소에는 커밋하지 않고 이번 배포에 보내는 파일만 바꿉니다.
+          env APP_HOST="$APP_HOST" node -e "
+            const fs = require('node:fs');
+            const p = JSON.parse(fs.readFileSync('project.json', 'utf8'));
+            p.domain = process.env.APP_HOST;
+            fs.writeFileSync('project.json', JSON.stringify(p, null, 2) + '\n');
+          "
+
+          {
+            echo "PROJECT_ID=$PROJECT_ID"
+            echo "BASE_DOMAIN=$BASE_DOMAIN"
+            echo "APP_HOST=$APP_HOST"
+          } >> "$GITHUB_ENV"
+
+          echo "접속 주소: https://${APP_HOST}"
+
+      # 이 주소가 정말 우리 서버로 오는지 실제로 조회해서 확인합니다.
+      #
+      # 왜 필요한가:
+      #   보통은 와일드카드(*.도메인)가 모든 이름을 이 서버로 보냅니다.
+      #   그런데 개별 A/CNAME 레코드가 있는 이름은 와일드카드보다 우선합니다.
+      #   그런 이름을 id 로 쓰면 사용자는 엉뚱한 서버로 가는데,
+      #   아래 Health Check 는 --resolve 로 주소를 강제로 이 서버에 꽂아 확인하므로
+      #   배포는 "성공" 으로 끝나버립니다. 그 조용한 실패를 여기서 막습니다.
+      #
+      # 빌드 앞에 두어, 잘못된 id 면 무거운 빌드를 시작하기 전에 멈추게 합니다.
+      - name: 접속 주소가 이 서버를 가리키는지 확인
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+
+          # getent 는 어느 러너에나 있습니다. dig 은 없을 수 있습니다.
+          resolve() { getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u; }
+
+          APP_IPS="$(resolve "$APP_HOST" || true)"
+          SERVER_IPS="$(resolve "$DEPLOY_HOST" || true)"
+
+          if [ -z "$APP_IPS" ]; then
+            echo "::error::$APP_HOST 이(가) DNS 에서 조회되지 않습니다."
+            echo "베이스 도메인에 와일드카드(*.$BASE_DOMAIN) 레코드가 있는지 확인하세요." >&2
+            exit 1
+          fi
+
+          if [ -z "$SERVER_IPS" ]; then
+            echo "::error::DEPLOY_HOST 를 조회할 수 없습니다. Secret 값을 확인하세요."
+            exit 1
+          fi
+
+          # 두 목록에 겹치는 주소가 하나라도 있으면 통과입니다.
+          if comm -12 <(echo "$APP_IPS") <(echo "$SERVER_IPS") | grep -q .; then
+            echo "확인됨: $APP_HOST 는 배포 서버를 가리킵니다."
+          else
+            echo "::error::$APP_HOST 이(가) 이 배포 서버가 아닌 다른 곳을 가리킵니다."
+            echo "" >&2
+            echo "  가리키는 곳: $(echo "$APP_IPS" | tr '\n' ' ')" >&2
+            echo "" >&2
+            echo "이 이름에는 이미 개별 DNS 레코드가 있어 와일드카드보다 우선합니다." >&2
+            echo "project.json 의 id 를 다른 값으로 바꾸고 다시 Push 하세요." >&2
+            echo "(이대로 배포하면 Actions 는 성공이라고 나오지만 실제 접속은 다른 서버로 갑니다.)" >&2
+            exit 1
+          fi
+
+      # 이미지는 여기(GitHub)에서 만듭니다. EC2 에서 만들지 않습니다.
+      #
+      # 왜: EC2 는 vCPU 1개 / 메모리 2GB 라서 Next.js 빌드를 견디지 못합니다.
+      #     실제로 2026-08-13 배포에서 서버가 멈춰 재부팅됐습니다.
+      #     GitHub 러너는 vCPU 4개 / 메모리 16GB 라 여유가 있습니다.
+      #
+      # 태그에 커밋 해시를 붙여 배포마다 다른 이미지가 되게 합니다.
+      # 그래야 compose 가 "바뀐 게 없다" 고 판단해 옛 컨테이너를 그대로 두는 일이 없습니다.
+      - name: Docker 이미지 빌드
+        run: |
+          set -euo pipefail
+
+          APP_IMAGE="${PROJECT_ID}-app:${GITHUB_SHA:0:12}"
+
+          docker build --tag "$APP_IMAGE" --file Dockerfile .
+
+          echo "APP_IMAGE=$APP_IMAGE" >> "$GITHUB_ENV"
+          echo "만든 이미지: $APP_IMAGE"
+          docker image inspect "$APP_IMAGE" --format '이미지 크기: {{.Size}} bytes'
+
+      # 저장소 이름이 그대로 서버 경로가 되므로, 이상한 문자가 섞여 있지 않은지 확인합니다.
+      - name: 저장소 이름 확인 및 배포 경로 결정
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+
+          # 영문 대소문자, 숫자, 하이픈, 밑줄, 점만 허용합니다.
+          if [[ ! "$REPO_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "::error::저장소 이름에 허용되지 않는 문자가 있어 배포를 중단합니다."
+            exit 1
+          fi
+
+          # "." 과 ".." 은 상위 폴더를 가리키므로 경로로 쓸 수 없습니다.
+          if [[ "$REPO_NAME" == "." || "$REPO_NAME" == ".." ]]; then
+            echo "::error::저장소 이름을 폴더 이름으로 쓸 수 없어 배포를 중단합니다."
+            exit 1
+          fi
+
+          echo "REMOTE_DIR=${REMOTE_ROOT}/${REPO_NAME}" >> "$GITHUB_ENV"
+          echo "배포 대상 폴더: ${REMOTE_ROOT}/${REPO_NAME}"
+
+      # 개인키는 파일로 만들되, 화면(로그)에는 절대 출력하지 않습니다.
+      - name: SSH 접속 준비
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DEPLOY_HOST:-}" ] || [ -z "${DEPLOY_SSH_KEY:-}" ]; then
+            echo "::error::DEPLOY_HOST 또는 DEPLOY_SSH_KEY Secret 이 비어 있습니다."
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # umask 077 로 만들어 다른 사용자가 읽을 수 없게 합니다. 내용은 출력하지 않습니다.
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          # 서버의 호스트 키를 미리 등록해 두면, 접속할 때 "정말 접속할까요?" 를 묻지 않습니다.
+          # -H 는 등록되는 주소를 해시로 감춥니다.
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          chmod 600 ~/.ssh/known_hosts
+
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "::error::EC2 호스트 키를 가져오지 못했습니다. DEPLOY_HOST 값과 보안 그룹의 22번 포트를 확인하세요."
+            exit 1
+          fi
+
+          echo "SSH 준비 완료"
+
+      - name: EC2 프로젝트 폴더 준비
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+
+          # 아래 <<'REMOTE' 는 따옴표가 있으므로 GitHub 쪽에서 변수를 바꾸지 않고 그대로 EC2 에 보냅니다.
+          # 그래서 스크립트 안의 $REMOTE_DIR 은 EC2 에서 풀립니다.
+          # EC2 에 전달할 값은 bash -s 앞에 붙여서 넘깁니다.
+          # shellcheck disable=SC2086
+          ssh -i "$HOME/.ssh/deploy_key" $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" \
+            "REMOTE_DIR='$REMOTE_DIR' bash -s" <<'REMOTE'
+          set -euo pipefail
+          mkdir -p "$REMOTE_DIR"
+          cd "$REMOTE_DIR"
+          echo "프로젝트 폴더 준비 완료: $(pwd)"
+          REMOTE
+
+      # 변경된 파일만 골라서 EC2 로 보냅니다.
+      # --delete 는 GitHub 에서 지운 파일을 EC2 에서도 지웁니다.
+      # 단, --exclude 로 뺀 항목은 --delete 대상에서도 빠지므로
+      # EC2 의 .env, data/, uploads/, logs/ 는 그대로 보존됩니다.
+      - name: 프로젝트 파일 전송 (rsync)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+
+          rsync -az --delete --human-readable \
+            -e "ssh -i $HOME/.ssh/deploy_key $SSH_OPTS" \
+            --exclude='.git/' \
+            --exclude='node_modules/' \
+            --exclude='.next/' \
+            --exclude='.env' \
+            --exclude='.env.local' \
+            --exclude='.env.production' \
+            --exclude='.env.*.local' \
+            --exclude='data/' \
+            --exclude='uploads/' \
+            --exclude='logs/' \
+            --exclude='npm-debug.log*' \
+            --exclude='yarn-error.log*' \
+            --exclude='*.log' \
+            --exclude='.vscode/' \
+            --exclude='.idea/' \
+            --exclude='*.swp' \
+            --exclude='*.swo' \
+            --exclude='*~' \
+            --exclude='.DS_Store' \
+            --exclude='Thumbs.db' \
+            ./ "$DEPLOY_USER@$DEPLOY_HOST:$REMOTE_DIR/"
+
+          echo "파일 전송 완료"
+
+      # 만든 이미지를 EC2 로 보냅니다.
+      #
+      # docker save 로 이미지를 통째로 묶고, gzip 으로 줄여서, 지금 쓰는 SSH 통로로 흘려보냅니다.
+      # EC2 쪽에서는 docker load 가 표준입력으로 바로 받아 풀기 때문에
+      # 서버 디스크에 큰 임시 파일이 남지 않습니다.
+      #
+      # gzip -1 은 가장 약한 압축입니다. 여기서는 CPU 를 아끼는 쪽이 전체적으로 더 빠릅니다.
+      - name: 이미지 EC2 로 전송
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+
+          docker save "$APP_IMAGE" | gzip -1 > /tmp/app-image.tar.gz
+          echo "보낼 파일 크기: $(du -h /tmp/app-image.tar.gz | cut -f1)"
+
+          # shellcheck disable=SC2086
+          ssh -i "$HOME/.ssh/deploy_key" $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" \
+            'docker load' < /tmp/app-image.tar.gz
+
+          rm -f /tmp/app-image.tar.gz
+          echo "이미지 전송 완료"
+
+      # API 키 같은 비밀값을 서버로 보냅니다.
+      #
+      # 저장소 Secret 에 APP_ENV 라는 이름으로, .env.local 과 같은 형식으로 적습니다.
+      #   OPENAI_API_KEY=sk-...
+      #   SLACK_BOT_TOKEN=xoxb-...
+      #
+      # Secret 을 여러 개 만들지 않고 하나에 모으는 이유:
+      #   GitHub Actions 는 등록된 Secret 목록을 훑을 수 없습니다.
+      #   워크플로에 이름을 미리 적어야 하는데, 그러면 키를 추가할 때마다
+      #   이 파일을 고쳐야 합니다. 하나로 모으면 템플릿을 안 건드려도 됩니다.
+      #
+      # APP_ENV 를 등록하지 않았다면 이 단계는 아무것도 하지 않습니다.
+      # 서버에 직접 만들어 둔 .env.local 이 있다면 그대로 보존됩니다.
+      - name: 앱 비밀값 전달
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          APP_ENV: ${{ secrets.APP_ENV }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_ENV:-}" ]; then
+            echo "APP_ENV Secret 이 없습니다. 비밀값 전달을 건너뜁니다."
+            echo "(API 키가 필요하면 저장소 Settings > Secrets and variables > Actions 에서"
+            echo " APP_ENV 라는 이름으로 등록하세요.)"
+            exit 0
+          fi
+
+          # 형식을 미리 확인합니다. 잘못된 줄이 있으면 컨테이너가 뜨지 않습니다.
+          # 값은 절대 출력하지 않고 줄 번호만 알립니다.
+          LINE_NO=0
+          BAD=0
+          while IFS= read -r line; do
+            LINE_NO=$((LINE_NO + 1))
+            # 빈 줄과 주석은 넘어갑니다.
+            case "$line" in
+              ''|'#'*) continue ;;
+            esac
+            if ! printf '%s' "$line" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*='; then
+              echo "::error::APP_ENV 의 ${LINE_NO}번째 줄이 KEY=VALUE 형식이 아닙니다."
+              BAD=1
+            fi
+          done <<< "$APP_ENV"
+
+          if [ "$BAD" -ne 0 ]; then
+            echo "APP_ENV 는 .env.local 과 같은 형식이어야 합니다:" >&2
+            echo "  OPENAI_API_KEY=sk-..." >&2
+            echo "따옴표나 export, JSON 은 쓰지 마세요." >&2
+            exit 1
+          fi
+
+          # 표준입력으로 넘깁니다. 명령행에 값이 남지 않습니다.
+          # umask 077 이라 파일은 600 으로 만들어집니다.
+          # shellcheck disable=SC2086
+          printf '%s\n' "$APP_ENV" | ssh -i "$HOME/.ssh/deploy_key" $SSH_OPTS \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "umask 077 && cat > '$REMOTE_DIR/.env.local' && chmod 600 '$REMOTE_DIR/.env.local'"
+
+          echo "비밀값 $(printf '%s\n' "$APP_ENV" | grep -Ec '^[A-Za-z_][A-Za-z0-9_]*=')개를 서버로 보냈습니다."
+
+      # project.json 의 database 가 true 일 때만 실행합니다.
+      #
+      # 서버의 provision.sh 가 이 프로젝트 전용 데이터베이스와 계정을 만들고
+      # 접속 주소를 돌려줍니다. 이미 있으면 기존 것을 그대로 씁니다.
+      #
+      # 비밀번호는 서버 안에서 만들어지고 서버 밖으로 나가지 않습니다.
+      # 직원이 어딘가에 등록하거나 볼 일이 없습니다.
+      - name: 데이터베이스 준비
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+
+          USE_DB="$(node -p "require('./project.json').database === true")"
+
+          if [ "$USE_DB" != "true" ]; then
+            echo "project.json 의 database 가 false 입니다. 데이터베이스를 만들지 않습니다."
+            echo "DATABASE_URL=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          echo "데이터베이스를 준비합니다: $PROJECT_ID"
+
+          # provision.sh 는 접속 주소만 표준출력으로 내보냅니다.
+          # 사람이 읽는 메시지는 표준오류로 나오므로 아래 로그에 함께 보입니다.
+          # shellcheck disable=SC2086
+          DB_URL="$(ssh -i "$HOME/.ssh/deploy_key" $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash /srv/company-ai/postgres/provision.sh '$PROJECT_ID'")"
+
+          if [ -z "$DB_URL" ]; then
+            echo "::error::데이터베이스 접속 주소를 받지 못했습니다."
+            echo "서버에 공용 PostgreSQL 이 떠 있는지 확인하세요:" >&2
+            echo "  cd /srv/company-ai/postgres && bash bootstrap.sh" >&2
+            exit 1
+          fi
+
+          # 접속 주소에는 비밀번호가 들어 있습니다.
+          # add-mask 로 등록해 두면 이후 로그에 값이 나와도 *** 로 가려집니다.
+          echo "::add-mask::$DB_URL"
+          echo "DATABASE_URL=$DB_URL" >> "$GITHUB_ENV"
+
+          echo "데이터베이스 준비 완료"
+
+      - name: EC2 에서 Docker 실행
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2086
+          ssh -i "$HOME/.ssh/deploy_key" $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" \
+            "REMOTE_DIR='$REMOTE_DIR' APP_SERVICE='$APP_SERVICE' COMPOSE_FILES='$COMPOSE_FILES' \
+             PROJECT_ID='$PROJECT_ID' BASE_DOMAIN='$BASE_DOMAIN' APP_IMAGE='$APP_IMAGE' \
+             REMOTE_ROOT='$REMOTE_ROOT' DATABASE_URL='${DATABASE_URL:-}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          cd "$REMOTE_DIR"
+
+          # compose.prod.yaml 안에서 치환되는 값들입니다.
+          #   APP_IMAGE    -> image:
+          #   DATABASE_URL -> 앱 환경변수 (DB 를 안 쓰면 빈 값)
+          #   나머지 둘    -> Traefik 라벨
+          export PROJECT_ID BASE_DOMAIN APP_IMAGE DATABASE_URL
+
+          # db 네트워크는 DB 를 쓰지 않는 프로젝트에도 필요합니다.
+          # compose.prod.yaml 이 항상 이 네트워크를 참조하기 때문입니다.
+          # (붙어 있어도 계정이 없으면 남의 데이터에는 접근할 수 없습니다.)
+          if ! docker network inspect db >/dev/null 2>&1; then
+            echo "공용 네트워크 db 가 없습니다. 서버에서 PostgreSQL 을 먼저 띄우세요:" >&2
+            echo "  cd /srv/company-ai/postgres && bash bootstrap.sh" >&2
+            exit 1
+          fi
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "docker 명령을 찾을 수 없습니다. EC2 에 Docker 를 설치하세요." >&2
+            exit 1
+          fi
+
+          if ! docker compose version >/dev/null 2>&1; then
+            echo "docker compose 를 쓸 수 없습니다. Docker Compose v2 플러그인을 설치하세요." >&2
+            exit 1
+          fi
+
+          # 이미지는 GitHub 에서 만들어 바로 앞 단계에서 보냈습니다.
+          # 여기서 없다면 전송이 조용히 실패한 것이므로 멈춥니다.
+          # (이 확인이 없으면 compose 가 EC2 에서 빌드를 시도해 서버가 멈출 수 있습니다.)
+          if ! docker image inspect "$APP_IMAGE" >/dev/null 2>&1; then
+            echo "이미지 $APP_IMAGE 가 서버에 없습니다. 이미지 전송 단계를 확인하세요." >&2
+            exit 1
+          fi
+
+          for f in compose.yaml compose.prod.yaml; do
+            if [ ! -f "$f" ]; then
+              echo "$f 이 없습니다." >&2
+              exit 1
+            fi
+          done
+
+          # 프로젝트 ID 가 다른 사람 것과 겹치는지 확인합니다.
+          #
+          # 접속 주소, Traefik 라우터 이름, 이미지 이름이 모두 이 값으로 정해집니다.
+          # 겹치면 서로의 프로젝트를 덮어쓰고 주소를 빼앗습니다.
+          # 템플릿의 예시 id 를 안 바꾸고 배포하는 경우가 가장 흔합니다.
+          for other in "$REMOTE_ROOT"/*/; do
+            other="${other%/}"
+            [ "$other" = "$REMOTE_DIR" ] && continue
+            [ -f "$other/project.json" ] || continue
+
+            other_id="$(jq -r '.id // empty' "$other/project.json" 2>/dev/null || true)"
+
+            if [ -n "$other_id" ] && [ "$other_id" = "$PROJECT_ID" ]; then
+              echo "프로젝트 ID \"$PROJECT_ID\" 를 이미 다른 프로젝트가 쓰고 있습니다." >&2
+              echo "  이미 쓰는 곳 : $other" >&2
+              echo "  내 프로젝트  : $REMOTE_DIR" >&2
+              echo "" >&2
+              echo "project.json 의 id 를 겹치지 않는 값으로 바꾸고 다시 Push 하세요." >&2
+              echo "주소도 함께 바뀝니다: <id>.$BASE_DOMAIN" >&2
+              exit 1
+            fi
+          done
+
+          # Traefik 이 만들어 두는 공용 네트워크입니다.
+          # 없으면 컨테이너는 떠도 외부에서 접속할 수 없습니다.
+          if ! docker network inspect web >/dev/null 2>&1; then
+            echo "공용 네트워크 web 이 없습니다. 서버에서 Traefik 을 먼저 띄우세요:" >&2
+            echo "  cd /srv/company-ai/traefik && bash bootstrap.sh" >&2
+            exit 1
+          fi
+
+          echo "--- compose 설정 문법 검사 ---"
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES config >/dev/null
+          echo "문법 이상 없음"
+
+          echo "--- 실행 ---"
+          # --no-build : EC2 에서는 절대 빌드하지 않습니다.
+          #              이미지가 없으면 조용히 빌드에 들어가는 대신 오류로 멈춥니다.
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES up -d --no-build --remove-orphans
+
+          # 배포할 때마다 이미지가 하나씩 쌓여 디스크가 찹니다.
+          # 방금 띄운 것만 남기고 이 프로젝트의 옛 이미지를 지웁니다.
+          # 다른 프로젝트의 이미지는 이름이 달라 건드리지 않습니다.
+          echo "--- 옛 이미지 정리 ---"
+          docker images --format '{{.Repository}}:{{.Tag}}' \
+            | grep "^${PROJECT_ID}-app:" \
+            | grep -v "^${APP_IMAGE}$" \
+            | xargs -r docker rmi -f 2>/dev/null || true
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep "^${PROJECT_ID}-app:" || true
+
+          echo "--- 컨테이너 상태 ---"
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES ps
+
+          echo "--- 최근 로그 100줄 ---"
+          # shellcheck disable=SC2086
+          docker compose $COMPOSE_FILES logs --tail=100 "$APP_SERVICE"
+          REMOTE
+
+      # 컨테이너가 떴다고 해서 앱이 정상이라는 뜻은 아닙니다. 실제 응답을 두 단계로 확인합니다.
+      #   1단계  컨테이너 안에서 앱이 응답하는가          -> 앱 자체 문제인지 가림
+      #   2단계  Traefik 을 거쳐 HTTPS 로 응답하는가      -> 라우팅·인증서까지 확인
+      # 2단계가 통과하면 DNS 를 뺀 나머지(라우팅·인증서·앱)가 전부 정상이라는 뜻입니다.
+      - name: Health Check
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+
+          # shellcheck disable=SC2086
+          ssh -i "$HOME/.ssh/deploy_key" $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" \
+            "REMOTE_DIR='$REMOTE_DIR' APP_SERVICE='$APP_SERVICE' COMPOSE_FILES='$COMPOSE_FILES' \
+             APP_HOST='$APP_HOST' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          cd "$REMOTE_DIR"
+
+          dump_logs() {
+            echo "--- 최근 로그 200줄 ---" >&2
+            # shellcheck disable=SC2086
+            docker compose $COMPOSE_FILES logs --tail=200 "$APP_SERVICE" >&2 || true
+          }
+
+          # ---------------------------------------------------- 1단계: 컨테이너 안
+          echo "== 1단계: 컨테이너 안에서 앱 응답 확인 =="
+
+          max_attempts=12
+          attempt=0
+          ok=0
+
+          while [ "$attempt" -lt "$max_attempts" ]; do
+            attempt=$((attempt + 1))
+
+            # shellcheck disable=SC2086
+            if docker compose $COMPOSE_FILES exec -T "$APP_SERVICE" \
+                 node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
+                 >/dev/null 2>&1; then
+              echo "1단계 성공 (${attempt}번째 시도)"
+              ok=1
+              break
+            fi
+
+            echo "아직 준비되지 않았습니다 (${attempt}/${max_attempts})"
+            [ "$attempt" -lt "$max_attempts" ] && sleep 5
+          done
+
+          if [ "$ok" -ne 1 ]; then
+            echo "1단계 실패: 컨테이너 안에서도 앱이 응답하지 않습니다." >&2
+            dump_logs
+            exit 1
+          fi
+
+          # ------------------------------------------------ 2단계: Traefik 경유 HTTPS
+          echo
+          echo "== 2단계: Traefik 경유 HTTPS 확인 ($APP_HOST) =="
+
+          # --resolve 로 DNS 를 거치지 않고 이 서버의 443 으로 바로 붙습니다.
+          # DNS 전파가 아직 안 끝났어도 라우팅과 인증서를 확인할 수 있습니다.
+          #
+          # -k 를 쓰는 이유: 스테이징 인증서로 검증하는 동안에는 신뢰 체인이 없어
+          # 검증이 실패합니다. 대신 아래에서 실제 발급자를 출력하므로,
+          # 운영 전환 후에는 로그에서 Let's Encrypt 인지 눈으로 확인할 수 있습니다.
+          max_attempts=12
+          attempt=0
+
+          while [ "$attempt" -lt "$max_attempts" ]; do
+            attempt=$((attempt + 1))
+
+            body_file="$(mktemp)"
+            status_code="$(curl -sSk -o "$body_file" -w '%{http_code}' --max-time 5 \
+              --resolve "${APP_HOST}:443:127.0.0.1" \
+              "https://${APP_HOST}/api/health" 2>/dev/null || echo '000')"
+
+            if [ "$status_code" = "200" ]; then
+              echo "2단계 성공 (HTTP 200, ${attempt}번째 시도)"
+              echo "응답 본문:"
+              cat "$body_file"
+              echo
+              rm -f "$body_file"
+
+              echo "--- 인증서 발급자 ---"
+              echo | openssl s_client -connect 127.0.0.1:443 -servername "$APP_HOST" 2>/dev/null \
+                | openssl x509 -noout -issuer -dates 2>/dev/null \
+                || echo "(발급자 확인 실패 - openssl 없음)"
+
+              echo
+              echo "배포 완료: https://${APP_HOST}"
+              exit 0
+            fi
+
+            echo "아직 준비되지 않았습니다 (${attempt}/${max_attempts}, HTTP ${status_code})"
+            rm -f "$body_file"
+
+            [ "$attempt" -lt "$max_attempts" ] && sleep 5
+          done
+
+          echo "2단계 실패: Traefik 을 거친 HTTPS 응답을 받지 못했습니다." >&2
+          echo "앱 자체는 1단계에서 정상이었으므로 라우팅 또는 인증서 문제입니다." >&2
+          echo "확인할 것:" >&2
+          echo "  docker logs traefik --tail=100" >&2
+          echo "  docker inspect ${APP_SERVICE} 컨테이너의 traefik.* 라벨" >&2
+          dump_logs
+          exit 1
+          REMOTE
+
+      # 성공하든 실패하든 임시 개인키 파일을 반드시 지웁니다.
+      - name: 임시 SSH 키 삭제
+        if: always()
+        run: rm -f "$HOME/.ssh/deploy_key"

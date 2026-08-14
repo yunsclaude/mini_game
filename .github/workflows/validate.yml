@@ -1,0 +1,60 @@
+# 코드 검사 자동화입니다.
+# main 브랜치에 Push 하거나 Pull Request 를 열면 GitHub 이 자동으로 실행합니다.
+#
+# 이 단계에서는 검사만 합니다. EC2 접속이나 실제 배포는 하지 않습니다.
+# AWS 키, SSH 키, 도메인 정보를 이 파일에 넣지 마세요.
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 같은 브랜치에서 연속으로 Push 하면 이전 실행을 취소합니다.
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: 코드 검사
+    runs-on: ubuntu-latest
+
+    steps:
+      # 외부 액션은 GitHub 공식 액션(actions/*)만 사용합니다.
+      - name: 코드 내려받기
+        uses: actions/checkout@v5
+
+      - name: Node.js 22 설정
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: 의존성 설치
+        run: npm ci
+
+      - name: 프로젝트 정보 검사
+        run: npm run validate:project
+
+      # 소스에 API 키가 직접 적혀 있으면 여기서 멈춥니다.
+      # 로컬 커밋 훅은 --no-verify 로 건너뛸 수 있지만 이 검사는 건너뛸 수 없습니다.
+      - name: 비밀값 검사
+        run: npm run check:secrets
+
+      - name: ESLint 검사
+        run: npm run lint
+
+      - name: TypeScript 타입 검사
+        run: npm run typecheck
+
+      - name: Next.js 빌드
+        run: npm run build
+
+      # ubuntu-latest 러너에는 Docker 가 기본 설치되어 있어 추가 액션이 필요 없습니다.
+      - name: Docker 이미지 빌드 검사
+        run: docker build -t ${{ github.event.repository.name }}:ci .

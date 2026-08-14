@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# 커밋하기 직전에 자동으로 실행됩니다.
+# 커밋하려는 파일에 API 키가 들어 있으면 커밋을 막습니다.
+#
+# 이 훅은 npm ci (또는 npm install) 를 할 때 자동으로 켜집니다.
+# package.json 의 prepare 스크립트가 git 에게 이 폴더를 쓰라고 알려 줍니다.
+#
+# 수동으로 켜려면:
+#   git config core.hooksPath .githooks
+#
+# 급할 때 건너뛰려면 (권장하지 않습니다):
+#   git commit --no-verify
+#
+# 건너뛰어도 GitHub 에 올라가면 CI 가 다시 검사해서 배포를 막습니다.
+#
+# bash 가 아니라 sh 로 짠 이유:
+#   Windows 의 Git Bash 등 어디서든 그대로 돌아야 합니다.
+#   여기서는 bash 만의 기능이 필요하지 않습니다.
+
+set -u
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+CHECKER="$REPO_ROOT/scripts/check-secrets.mjs"
+
+# 검사 스크립트가 없거나 node 를 찾을 수 없으면 커밋을 막지 않습니다.
+# 훅 때문에 작업이 멈추는 일은 없어야 합니다.
+# 이 경우에도 GitHub 에 올라가면 CI 가 검사합니다.
+if [ ! -f "$CHECKER" ]; then
+  exit 0
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  exit 0
+fi
+
+if node "$CHECKER" --staged; then
+  exit 0
+fi
+
+cat >&2 <<'MSG'
+
+커밋을 취소했습니다.
+
+위 파일에서 비밀값을 지우고 다시 커밋하세요.
+정말 이대로 커밋해야 한다면: git commit --no-verify
+(다만 GitHub 에 올라가면 배포가 거부됩니다.)
+
+MSG
+
+exit 1

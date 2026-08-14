@@ -1,0 +1,50 @@
+# Docker 이미지에 넣지 않을 파일 목록입니다.
+# 여기에 없는 파일만 빌드 컨텍스트로 전달됩니다.
+# 빌드에 실제로 필요한 파일(app, components, lib, public, project.json,
+# package.json, package-lock.json, next.config.ts, tsconfig.json 등)은 제외하지 마세요.
+
+# 의존성 / 빌드 결과 (이미지 안에서 새로 만듭니다)
+node_modules
+.next
+out
+dist
+build
+coverage
+
+# 버전 관리 / CI
+.git
+.gitignore
+.github
+
+# 환경변수 (실제 값은 실행 환경에서 주입합니다)
+.env
+.env.*
+
+# 문서
+README.md
+CLAUDE.md
+AGENTS.md
+
+# 로그
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+logs
+*.log
+
+# 로컬 개발용 임시 파일
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.swp
+*.tsbuildinfo
+.claude
+
+# 인증서 / 개인키 (이미지에 절대 포함하지 않습니다)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx

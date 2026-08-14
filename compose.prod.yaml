@@ -1,0 +1,70 @@
+# 운영(EC2) 전용 덮어쓰기 파일입니다. 로컬에서는 쓰지 않습니다.
+#
+# 로컬은 지금까지처럼 그대로 쓰세요:
+#   docker compose up -d --build              -> http://localhost:3000
+#
+# 운영에서는 GitHub Actions 가 아래처럼 두 파일을 겹쳐서 실행합니다:
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d --no-build
+#
+# 운영에서는 EC2 가 직접 빌드하지 않습니다.
+# GitHub Actions 가 이미지를 만들어 보내주고, EC2 는 받아서 실행만 합니다.
+# 그래서 아래 image 값이 반드시 필요합니다. (GitHub Actions 가 APP_IMAGE 로 넘겨줍니다.)
+#
+# 이 파일은 배포 자동화가 의존하므로 직접 수정하지 마세요.
+# 프로젝트 주소는 project.json 의 id 로 정해집니다. id 를 바꾸면 주소가 따라 바뀝니다.
+#   <project.json 의 id>.<BASE_DOMAIN>   예) lunch-roulette.ai.example.com
+
+services:
+  app:
+    # GitHub Actions 가 만들어 보낸 이미지를 그대로 씁니다. EC2 에서 빌드하지 않습니다.
+    # 값이 비어 있으면 실행을 멈춥니다. 잘못된 이미지가 조용히 뜨는 것보다 낫습니다.
+    image: "${APP_IMAGE:?APP_IMAGE 가 없습니다. 이 파일은 GitHub Actions 배포에서만 씁니다}"
+
+    # 로컬용 3000 번 게시를 취소합니다.
+    # 외부에 노출되는 것은 Traefik 의 80/443 뿐이고, 앱은 web 네트워크 안에서만 접근됩니다.
+    # 그래서 여러 프로젝트가 모두 컨테이너 3000 번을 써도 서로 충돌하지 않습니다.
+    ports: !reset []
+
+    # 로컬용 db 서비스에 의존하지 않습니다. 운영에서는 공용 PostgreSQL 을 씁니다.
+    depends_on: !reset {}
+
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # 공용 PostgreSQL 접속 주소입니다.
+      # 서버의 provision.sh 가 프로젝트별로 만들어 주고 GitHub Actions 가 넘겨줍니다.
+      # project.json 의 database 가 false 면 빈 값이 들어오고, 그때는 DB 를 쓰지 않습니다.
+      DATABASE_URL: "${DATABASE_URL:-}"
+
+    # Traefik 은 exposedbydefault=false 이므로, 아래 라벨이 붙은 컨테이너만 외부에 노출됩니다.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.${PROJECT_ID}.rule=Host(`${PROJECT_ID}.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.${PROJECT_ID}.entrypoints=websecure"
+      - "traefik.http.routers.${PROJECT_ID}.tls=true"
+      # 컨테이너 안에서 앱이 듣고 있는 포트입니다. project.json 의 port 와 같아야 합니다.
+      - "traefik.http.services.${PROJECT_ID}.loadbalancer.server.port=3000"
+
+    networks:
+      # 인터넷에서 Traefik 을 거쳐 들어오는 길입니다.
+      - web
+      # 공용 PostgreSQL 로 나가는 길입니다. 인터넷과는 이어져 있지 않습니다.
+      - db
+
+  # 로컬 개발용 db 서비스를 운영에서는 띄우지 않습니다.
+  #
+  # compose 에는 "서비스 삭제" 기능이 없어서, 프로필을 붙여 제외합니다.
+  # 운영에서는 이 프로필을 켜지 않으므로 이 서비스는 만들어지지 않습니다.
+  db:
+    profiles:
+      - local-only
+
+# 서버에 미리 만들어져 있는 공용 네트워크입니다.
+#   web  - Traefik 이 bootstrap.sh 로 만듭니다
+#   db   - PostgreSQL 이 bootstrap.sh 로 만듭니다
+networks:
+  web:
+    external: true
+  db:
+    external: true

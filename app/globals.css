@@ -1,0 +1,276 @@
+/* 전사 AI 프로젝트 템플릿 기본 스타일 (UI 프레임워크 없이 순수 CSS) */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e3e6ea;
+  --text: #16191d;
+  --text-muted: #5c636e;
+  --accent: #1f6feb;
+  --ok: #15803d;
+  --ok-bg: #e8f6ee;
+  --code-bg: #f0f2f5;
+  --radius: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115;
+    --surface: #171a20;
+    --border: #2a2f38;
+    --text: #e8eaed;
+    --text-muted: #9aa2ae;
+    --accent: #6ea8ff;
+    --ok: #6ee7a8;
+    --ok-bg: #16281f;
+    --code-bg: #212630;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Noto Sans KR",
+    "Malgun Gothic",
+    sans-serif;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+code {
+  background: var(--code-bg);
+  border-radius: 6px;
+  padding: 0.1em 0.4em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.link {
+  color: var(--accent);
+}
+
+/* 레이아웃 */
+.page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* 헤더 */
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.header-title {
+  margin: 0;
+  font-size: clamp(1.6rem, 5vw, 2.2rem);
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+}
+
+.header-description {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* 상태 배지 */
+.badge {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: var(--ok-bg);
+  color: var(--ok);
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.badge-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* 안내 문구 */
+.notice {
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--ok);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.1rem;
+  font-weight: 600;
+}
+
+/* 카드 */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+}
+
+.card-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.card-hint {
+  margin: 0 0 1rem;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* 프로젝트 정보 목록 */
+.info-list {
+  margin: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.info-row {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  gap: 0.75rem;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.info-row:first-child {
+  border-top: none;
+}
+
+.info-label {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.info-value {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* 수정 안내 목록 */
+.guide-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.guide-item {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.guide-file {
+  justify-self: start;
+}
+
+.guide-description {
+  color: var(--text-muted);
+  font-size: 0.92rem;
+}
+
+/* 메뉴 뽑기 */
+.picker-result {
+  margin: 0.5rem 0 1rem;
+  padding: 1.5rem 1rem;
+  background: var(--ok-bg);
+  border-radius: var(--radius);
+  color: var(--ok);
+  font-size: 1.75rem;
+  font-weight: 700;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.picker-button {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.picker-button:hover {
+  filter: brightness(1.08);
+}
+
+.picker-count {
+  margin: 0.75rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+/* 후보 메뉴 목록 */
+.menu-chips {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.menu-chip {
+  padding: 0.3rem 0.7rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+/* 푸터 */
+.footer {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.footer p {
+  margin: 0.3rem 0;
+}
+
+/* 좁은 화면 대응 */
+@media (max-width: 560px) {
+  .page {
+    padding: 2rem 1rem 3rem;
+    gap: 1.25rem;
+  }
+
+  .info-row {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+}

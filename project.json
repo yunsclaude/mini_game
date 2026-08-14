@@ -1,0 +1,10 @@
+{
+  "id": "lunch-roulette",
+  "name": "오늘 점심 뭐 먹지?",
+  "description": "점심 메뉴가 정해지지 않을 때 버튼 한 번으로 골라 주는 사내 도구입니다.",
+  "owner": "yun",
+  "department": "AI 교육",
+  "domain": "lunch-roulette.ai.example.com",
+  "port": 3000,
+  "database": false
+}
