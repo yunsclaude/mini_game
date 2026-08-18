@@ -9,7 +9,7 @@ import {
   createMarbles,
   defaultMarbleColor,
   finishRemaining,
-  gateBars,
+  rotorEnds,
   leadingMarble,
   stepMarbles,
   COURSE_WIDTH,
@@ -28,7 +28,8 @@ import { useParticipants } from "@/lib/useParticipants";
 /** 코스 좌우에 두는 여백입니다. */
 const PADDING = 12;
 const VIEW_WIDTH = COURSE_WIDTH + PADDING * 2;
-const VIEW_HEIGHT = 560;
+/** 한 화면에 들어오도록 세로를 짧게 잡습니다. 화면은 어차피 선두 공을 따라갑니다. */
+const VIEW_HEIGHT = 375;
 /** 선두 공을 화면의 이 높이쯤에 두고 따라갑니다. */
 const CAMERA_ANCHOR = 0.45;
 
@@ -194,21 +195,7 @@ export function MarbleGame() {
           가장 앞선 공을 따라가고, 제한 시간은 20초입니다.
         </p>
 
-        <div className="marble-stage">
-          <canvas
-            className="marble-canvas"
-            ref={canvasRef}
-            width={VIEW_WIDTH}
-            height={VIEW_HEIGHT}
-            aria-label={`참가자 ${names.length}명의 공이 코스를 내려가는 화면`}
-            role="img"
-          />
-          {phase === "idle" && (
-            <p className="marble-overlay">아래 버튼을 누르면 경주가 시작됩니다</p>
-          )}
-        </div>
-
-        <div className="button-row">
+        <div className="button-row button-row-top">
           <button
             className="button"
             type="button"
@@ -221,6 +208,20 @@ export function MarbleGame() {
             <button className="button button-quiet" type="button" onClick={reset}>
               처음부터
             </button>
+          )}
+        </div>
+
+        <div className="marble-stage">
+          <canvas
+            className="marble-canvas"
+            ref={canvasRef}
+            width={VIEW_WIDTH}
+            height={VIEW_HEIGHT}
+            aria-label={`참가자 ${names.length}명의 공이 코스를 내려가는 화면`}
+            role="img"
+          />
+          {phase === "idle" && (
+            <p className="marble-overlay">위 버튼을 누르면 경주가 시작됩니다</p>
           )}
         </div>
 
@@ -308,6 +309,19 @@ function draw(
   const viewTop = cameraY - 40;
   const viewBottom = cameraY + VIEW_HEIGHT + 40;
 
+  // 구간별 배경 — 어디까지가 한 구간인지 눈으로 구분되게 합니다.
+  //
+  // 캔버스는 CSS 변수를 읽을 수 없으므로 색을 직접 칠하면 밝은 테마에서 어색해집니다.
+  // 그래서 옅은 반투명 색을 덧칠해 바탕(var(--bg))이 비치게 합니다.
+  // 진하기와 밝기는 모든 구간이 같고 색상(hue)만 다르므로 화면 톤이 유지됩니다.
+  for (const band of course.bands) {
+    if (band.bottom < viewTop || band.top > viewBottom) {
+      continue;
+    }
+    context.fillStyle = `hsl(${band.hue} 70% 50% / 0.13)`;
+    context.fillRect(0, band.top, COURSE_WIDTH, band.bottom - band.top);
+  }
+
   // 벽
   context.strokeStyle = WALL_COLOR;
   context.lineWidth = 3;
@@ -333,24 +347,25 @@ function draw(
     context.fill();
   }
 
-  // 맞물려 도는 회전 차단봉 두 개 — 둘 다 가로로 누우면 통로가 막힙니다.
-  const gate = course.gate;
-  if (gate.y + gate.halfLength > viewTop && gate.y - gate.halfLength < viewBottom) {
-    context.strokeStyle = GATE_COLOR;
-    context.lineWidth = gate.halfThickness * 2;
-    context.lineCap = "round";
-    context.fillStyle = GATE_COLOR;
-
-    for (const bar of gateBars(gate)) {
-      context.beginPath();
-      context.moveTo(bar.ax, bar.ay);
-      context.lineTo(bar.bx, bar.by);
-      context.stroke();
-
-      context.beginPath();
-      context.arc(bar.pivotX, bar.pivotY, 4.5, 0, Math.PI * 2);
-      context.fill();
+  // 회전 막대 — 구간 안의 미니 회전봉과 도착 직전의 차단봉이 모두 여기에 들어갑니다.
+  context.strokeStyle = GATE_COLOR;
+  context.fillStyle = GATE_COLOR;
+  context.lineCap = "round";
+  for (const rotor of course.rotors) {
+    if (rotor.y + rotor.halfLength < viewTop || rotor.y - rotor.halfLength > viewBottom) {
+      continue;
     }
+
+    const ends = rotorEnds(rotor);
+    context.lineWidth = rotor.halfThickness * 2;
+    context.beginPath();
+    context.moveTo(ends.ax, ends.ay);
+    context.lineTo(ends.bx, ends.by);
+    context.stroke();
+
+    context.beginPath();
+    context.arc(rotor.x, rotor.y, 4.5, 0, Math.PI * 2);
+    context.fill();
   }
 
   // 도착선
@@ -390,11 +405,13 @@ function draw(
       context.stroke();
     }
 
-    const label = shortenLabel(marble.name, marble.radius);
-    context.font = `700 ${Math.round(marble.radius * 0.62)}px system-ui, sans-serif`;
+    const label = shortenLabel(marble.name);
+    const fontSize = labelFontSize(marble.radius, label.length);
+    context.font = `700 ${fontSize}px system-ui, sans-serif`;
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.lineWidth = 3;
+    // 테두리를 글자 크기에 맞춰 얇게 잡습니다. 굵으면 작은 글자가 뭉개집니다.
+    context.lineWidth = Math.max(1.5, fontSize * 0.28);
     context.strokeStyle = "rgba(0, 0, 0, 0.35)";
     context.strokeText(label, marble.x, marble.y);
     context.fillStyle = "#ffffff";
@@ -444,8 +461,22 @@ function drawHud(
   }
 }
 
-/** 공 크기에 맞게 이름을 줄입니다. */
-function shortenLabel(name: string, radius: number): string {
-  const limit = Math.max(1, Math.floor(radius / 6));
-  return name.length > limit ? name.slice(0, limit) : name;
+/** 공에 적을 수 있는 글자 수입니다. */
+const LABEL_MAX_LENGTH = 3;
+
+/** 공에 적을 이름입니다. 앞 세 글자까지만 씁니다. */
+function shortenLabel(name: string): string {
+  return name.length > LABEL_MAX_LENGTH ? name.slice(0, LABEL_MAX_LENGTH) : name;
+}
+
+/**
+ * 글자 수에 맞춰 크기를 줄여, 세 글자도 공 안에 들어가게 합니다.
+ *
+ * 한글은 글자 하나의 폭이 글자 크기와 거의 같습니다.
+ * 그래서 "글자 크기 × 글자 수" 가 공 안쪽 폭을 넘지 않도록 잡으면 됩니다.
+ */
+function labelFontSize(radius: number, length: number): number {
+  const insideWidth = radius * 1.75;
+  const fitted = Math.min(radius * 0.62, insideWidth / Math.max(length, 1));
+  return Math.max(6, Math.round(fitted));
 }

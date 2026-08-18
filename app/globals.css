@@ -358,6 +358,12 @@ code {
   margin-top: 0.75rem;
 }
 
+/* 화면 위쪽에 두는 버튼 줄입니다. 아래 내용과 간격을 둡니다. */
+.button-row-top {
+  margin-top: 0;
+  margin-bottom: 1rem;
+}
+
 /* 입력 */
 .field-label {
   display: block;
@@ -698,6 +704,12 @@ code {
   position: relative;
 }
 
+/*
+ * 가로는 칸을 꽉 채웁니다. 세로는 캔버스 자체를 짧게 만들어(VIEW_HEIGHT) 줄였습니다.
+ *
+ * 여기에 max-height 를 걸면 안 됩니다. width:100% 와 함께 쓰면 그림이 찌그러지고,
+ * width:auto 로 바꾸면 세로를 맞추느라 가로까지 같이 줄어들어 공 글씨가 안 보입니다.
+ */
 .marble-canvas {
   display: block;
   width: 100%;

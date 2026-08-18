@@ -12,7 +12,7 @@
  * 덕분에 경주 자체는 손대지 않은 정직한 시뮬레이션으로 둘 수 있습니다.
  */
 
-import { randomBetween, shuffle, wobble } from "@/lib/random";
+import { randomBetween, randomIndex, shuffle, wobble } from "@/lib/random";
 
 /** 코스의 가로 폭입니다. */
 export const COURSE_WIDTH = 420;
@@ -52,9 +52,18 @@ const GATE_TIP_CLEARANCE = 8;
 /** 회전축을 코스 한가운데에서 왼쪽으로 옮기는 거리입니다. */
 const GATE_OFFSET_X = 45;
 /** 회전 차단봉이 한 바퀴 도는 데 걸리는 시간(초)입니다. */
-const GATE_PERIOD_SECONDS = 3;
-/** 차단봉에 부딪혔을 때 튕기는 정도입니다. */
-const GATE_BOUNCE = 0.4;
+const GATE_PERIOD_SECONDS = 3.8;
+/**
+ * 회전 막대에 부딪혔을 때 튕기는 정도입니다.
+ *
+ * 높이면 공이 세게 쳐올려집니다. 도착 차단봉에서는 뒤처진 공 하나가
+ * 계속 쳐올려졌다 떨어지기를 반복하며 못 빠져나가는 일이 생겨서 낮췄습니다.
+ */
+const ROTOR_BOUNCE = 0.34;
+/** 구간 안에 놓는 미니 회전봉의 절반 길이입니다. */
+const MINI_ROTOR_HALF_LENGTH = 26;
+/** 미니 회전봉이 한 바퀴 도는 데 걸리는 시간(초)입니다. */
+const MINI_ROTOR_PERIOD_SECONDS = 1.6;
 
 /** 물리 계산 값입니다. 한 프레임을 두 번에 나눠 계산해 벽을 뚫고 지나가는 것을 막습니다. */
 const SUBSTEPS = 2;
@@ -94,63 +103,63 @@ export type Peg = {
 };
 
 /**
- * 도착 직전을 막아서는 회전 차단봉 두 개입니다.
+ * 제자리에서 도는 막대입니다.
  *
- * 좌우에 하나씩 있고 **서로 반대 방향으로** 돕니다. 두 봉이 그리는 원은 가운데에서
- * 딱 맞닿기만 해서 서로 겹치지 않고, 봉 끝이 같은 순간에 가운데에서 만납니다.
- * 톱니바퀴 두 개가 맞물려 도는 모습이 됩니다.
- *
- * 둘 다 가로로 누우면 방 전체를 막고, 그 사이가 벌어질 때만 공이 빠져나갑니다.
+ * 도착 직전의 차단봉도, 구간 안에 흩뿌린 미니 회전봉도 모두 이 하나로 표현합니다.
+ * 공에 밀리지 않고 정해진 속도로 계속 돌면서 공을 튕겨 냅니다.
  */
-export type Gate = {
+export type Rotor = {
+  x: number;
   y: number;
-  /** 왼쪽 봉의 회전축 x 좌표입니다. */
-  leftX: number;
-  /** 오른쪽 봉의 회전축 x 좌표입니다. */
-  rightX: number;
-  /** 봉 하나의 절반 길이입니다. 회전축 간격의 절반과 같아야 두 원이 맞닿습니다. */
+  /** 회전축에서 막대 끝까지의 거리입니다. */
   halfLength: number;
-  /** 봉의 굵기(절반)입니다. */
+  /** 막대의 굵기(절반)입니다. */
   halfThickness: number;
-  /** 왼쪽 봉의 각도(라디안)입니다. 오른쪽 봉은 이것을 좌우로 뒤집은 각도로 돕니다. */
+  /** 지금 각도(라디안)입니다. */
   angle: number;
-  /** 한 걸음마다 돌아가는 각도입니다. */
+  /** 한 걸음마다 도는 각도입니다. 부호가 회전 방향입니다. */
   speed: number;
 };
 
-/** 회전 중인 봉 하나입니다. 그리기와 충돌 계산이 같은 값을 씁니다. */
-export type GateBar = {
-  pivotX: number;
-  pivotY: number;
+/** 지금 각도에서 막대의 양 끝 좌표입니다. 그리기와 충돌 계산이 같은 값을 씁니다. */
+export function rotorEnds(rotor: Rotor): {
   ax: number;
   ay: number;
   bx: number;
   by: number;
-  /** 이 봉의 각속도입니다. 두 봉의 부호가 반대라 서로 맞물려 보입니다. */
-  spin: number;
-};
-
-/** 지금 각도에서 두 봉의 위치를 계산합니다. */
-export function gateBars(gate: Gate): [GateBar, GateBar] {
-  const build = (pivotX: number, angle: number, spin: number): GateBar => {
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    return {
-      pivotX,
-      pivotY: gate.y,
-      ax: pivotX - cos * gate.halfLength,
-      ay: gate.y - sin * gate.halfLength,
-      bx: pivotX + cos * gate.halfLength,
-      by: gate.y + sin * gate.halfLength,
-      spin,
-    };
+} {
+  const cos = Math.cos(rotor.angle);
+  const sin = Math.sin(rotor.angle);
+  return {
+    ax: rotor.x - cos * rotor.halfLength,
+    ay: rotor.y - sin * rotor.halfLength,
+    bx: rotor.x + cos * rotor.halfLength,
+    by: rotor.y + sin * rotor.halfLength,
   };
+}
 
-  // 오른쪽 봉은 왼쪽 봉을 좌우로 뒤집은 각도라서 반대 방향으로 돕니다.
-  return [
-    build(gate.leftX, gate.angle, gate.speed),
-    build(gate.rightX, Math.PI - gate.angle, -gate.speed),
-  ];
+/** 한 바퀴에 몇 초 걸릴지로 회전 속도를 정합니다. */
+function spinSpeed(periodSeconds: number, clockwise: boolean): number {
+  const magnitude = (Math.PI * 2) / (periodSeconds * 60 * SUBSTEPS * TIME_SCALE);
+  return clockwise ? magnitude : -magnitude;
+}
+
+/** 시작 각도가 매번 다른 회전 막대를 만듭니다. */
+function makeRotor(
+  x: number,
+  y: number,
+  halfLength: number,
+  periodSeconds: number,
+  clockwise: boolean,
+): Rotor {
+  return {
+    x,
+    y,
+    halfLength,
+    halfThickness: 5,
+    angle: randomBetween(0, Math.PI * 2),
+    speed: spinSpeed(periodSeconds, clockwise),
+  };
 }
 
 export type Course = {
@@ -163,7 +172,10 @@ export type Course = {
   spawnBottom: number;
   segments: Segment[];
   pegs: Peg[];
-  gate: Gate;
+  /** 코스 곳곳에서 도는 막대들입니다. 마지막 두 개는 도착 직전의 차단봉입니다. */
+  rotors: Rotor[];
+  /** 구간의 범위와 색조입니다. 순서대로 위에서 아래입니다. */
+  bands: CourseBand[];
   /**
    * 높이별 바깥 벽의 범위입니다. (BOUND_STEP 간격)
    *
@@ -187,8 +199,26 @@ export type Marble = {
 };
 
 /** 구간의 종류입니다. 매번 순서를 섞어서 코스가 늘 달라지게 합니다. */
-const BAND_KINDS = ["zigzag", "narrow", "plinko", "fork", "ramps", "funnel"] as const;
-type BandKind = (typeof BAND_KINDS)[number];
+const BAND_KINDS = [
+  "zigzag",
+  "narrow",
+  "plinko",
+  "fork",
+  "ramps",
+  "funnel",
+  "rotors",
+  "baffles",
+  "slots",
+] as const;
+export type BandKind = (typeof BAND_KINDS)[number];
+
+/** 코스를 이루는 구간 하나의 범위입니다. 배경을 칠하는 데 씁니다. */
+export type CourseBand = {
+  kind: BandKind;
+  top: number;
+  bottom: number;
+  hue: number;
+};
 
 /** 한 코스에 넣을 구간의 수입니다. 종류보다 적게 골라야 매번 조합이 달라집니다. */
 const BANDS_PER_COURSE = 4;
@@ -197,11 +227,7 @@ const BANDS_PER_COURSE = 4;
  * 미로 구간의 통로 반너비입니다.
  * 통로 모양(profileAt)과 섬 배치(addObstacles)가 반드시 같은 값을 봐야 하므로 여기 둡니다.
  */
-const NARROW_HALF = HALF - 30;
-/** 미로 위쪽 큰 섬의 절반 너비입니다. */
-const BIG_ISLAND_HALF_WIDTH = 62;
-/** 미로 아래쪽 작은 섬의 절반 너비입니다. */
-const SMALL_ISLAND_HALF_WIDTH = 31;
+const NARROW_HALF = HALF - 20;
 
 /**
  * 구간 가운데에서 계속 좁은 상태를 유지하는 모양입니다.
@@ -341,13 +367,177 @@ function addDiamond(
   addSegment(segments, cx - halfWidth, cy, cx, cy - halfHeight);
 }
 
+/**
+ * 벽에 붙여 놓는 쐐기입니다. 윗면이 통로 가운데를 향해 기울어 있습니다.
+ *
+ * 벽 근처로 떨어진 공을 반드시 받아서 가운데로 흘려보냅니다.
+ * 마름모를 벽에 붙이면 위쪽 경사면이 벽 쪽으로 내려가면서 그 사이에 V 자 홈이 생기고,
+ * 거기 빠진 공은 나오지 못합니다. 쐐기는 윗면이 벽에서 멀어지는 방향이라 그 문제가 없습니다.
+ */
+function addWedge(
+  segments: Segment[],
+  wallX: number,
+  tipX: number,
+  topY: number,
+  tipY: number,
+  bottomY: number,
+): void {
+  addSegment(segments, wallX, topY, tipX, tipY);
+  addSegment(segments, tipX, tipY, wallX, bottomY);
+  addSegment(segments, wallX, bottomY, wallX, topY);
+}
+
+/** 미로 한 층의 세로 여유입니다. 장애물이 이 범위를 넘지 않습니다. */
+const MAZE_ROW_REACH = 58;
+
+/**
+ * 미로 한 층에 장애물을 놓습니다. **배치도 크기도 개수도 매 판 무작위입니다.**
+ *
+ * 층마다 통로 전체를 가로막으면 "부딪혀서 반대쪽으로" 만 반복되어 가름막 구간과 똑같아집니다.
+ * 그래서 네 가지 배치 중 하나를 뽑고, 그 안에서도 크기와 위치를 다시 무작위로 정합니다.
+ *
+ * 어떤 배치가 나와도 지나갈 틈은 MIN_GAP 이상입니다. 이 계산은 통로가 가장 좁은 구간
+ * 기준이므로, 통로가 넓어지는 위아래 끝에서는 틈이 더 넉넉해집니다.
+ */
+function addMazeRow(segments: Segment[], y: number): void {
+  const wallLeft = CENTER - NARROW_HALF;
+  const wallRight = CENTER + NARROW_HALF;
+  const width = wallRight - wallLeft;
+  // 쐐기의 벽 쪽 면은 벽보다 조금 바깥에서 시작합니다.
+  // 통로 폭이 조금씩 달라져도 벽과 쐐기 사이에 틈이 생기지 않습니다.
+  const outsideLeft = wallLeft - 25;
+  const outsideRight = wallRight + 25;
+  const wedgeTop = y - MAZE_ROW_REACH;
+  const wedgeTip = y + 15;
+  const wedgeBottom = y + 45;
+
+  switch (randomIndex(4)) {
+    case 0: {
+      // 섬 하나 — 크기와 좌우 위치가 매번 다릅니다.
+      const halfWidth = randomBetween(30, 60);
+      const from = wallLeft + MIN_GAP + halfWidth;
+      const to = wallRight - MIN_GAP - halfWidth;
+      addDiamond(segments, randomBetween(from, to), y, halfWidth, halfWidth * 0.9);
+      return;
+    }
+
+    case 1: {
+      // 섬 둘 — 남는 폭을 세 틈에 무작위로 나눠서 좌우가 대칭이 되지 않게 합니다.
+      const first = randomBetween(24, 34);
+      const second = randomBetween(24, 34);
+      const slack = width - 2 * (first + second) - MIN_GAP * 3;
+      const extraLeft = randomBetween(0, slack);
+      const extraMiddle = randomBetween(0, slack - extraLeft);
+
+      const firstX = wallLeft + MIN_GAP + extraLeft + first;
+      const secondX = firstX + first + MIN_GAP + extraMiddle + second;
+      addDiamond(segments, firstX, y, first, first * 0.9);
+      addDiamond(segments, secondX, y, second, second * 0.9);
+      return;
+    }
+
+    case 2: {
+      // 벽 쐐기 하나 — 어느 쪽 벽인지, 얼마나 뻗는지가 매번 다릅니다.
+      const reach = randomBetween(80, 150);
+      if (randomIndex(2) === 0) {
+        addWedge(segments, outsideLeft, wallLeft + reach, wedgeTop, wedgeTip, wedgeBottom);
+      } else {
+        addWedge(segments, outsideRight, wallRight - reach, wedgeTop, wedgeTip, wedgeBottom);
+      }
+      return;
+    }
+
+    default: {
+      // 벽 쐐기 + 반대편 섬 — 길이 한쪽으로 크게 치우칩니다.
+      const reach = randomBetween(70, 110);
+      const halfWidth = randomBetween(26, 40);
+      const fromLeftWall = randomIndex(2) === 0;
+
+      const from = fromLeftWall
+        ? wallLeft + reach + MIN_GAP + halfWidth
+        : wallLeft + MIN_GAP + halfWidth;
+      const to = fromLeftWall
+        ? wallRight - MIN_GAP - halfWidth
+        : wallRight - reach - MIN_GAP - halfWidth;
+
+      if (fromLeftWall) {
+        addWedge(segments, outsideLeft, wallLeft + reach, wedgeTop, wedgeTip, wedgeBottom);
+      } else {
+        addWedge(segments, outsideRight, wallRight - reach, wedgeTop, wedgeTip, wedgeBottom);
+      }
+      addDiamond(segments, randomBetween(from, to), y, halfWidth, halfWidth * 0.9);
+      return;
+    }
+  }
+}
+
 /** 구간 안에 놓이는 장애물입니다. */
 function addObstacles(
   segments: Segment[],
   pegs: Peg[],
+  rotors: Rotor[],
   yTop: number,
   kind: BandKind,
 ): void {
+  const left = CENTER - HALF;
+  const right = CENTER + HALF;
+
+  if (kind === "rotors") {
+    // 미니 회전봉 밭 — 못밭과 배치는 비슷하지만 막대가 돌면서 공을 쳐 내므로 더 어렵습니다.
+    // 이웃한 막대가 그리는 원 사이도 MIN_GAP 보다 넓어야 공이 끼지 않습니다.
+    const rows = [
+      { y: yTop + 120, count: 3 },
+      { y: yTop + 265, count: 2 },
+      { y: yTop + 410, count: 3 },
+    ];
+
+    let index = 0;
+    for (const row of rows) {
+      for (const x of spreadEvenly(left, right, row.count, MINI_ROTOR_HALF_LENGTH)) {
+        // 이웃끼리 반대로 돌려서 공이 한쪽으로만 쏠리지 않게 합니다.
+        rotors.push(
+          makeRotor(
+            x,
+            row.y,
+            MINI_ROTOR_HALF_LENGTH,
+            MINI_ROTOR_PERIOD_SECONDS,
+            index % 2 === 0,
+          ),
+        );
+        index += 1;
+      }
+    }
+    return;
+  }
+
+  if (kind === "baffles") {
+    // 가름막 — 좌우에서 번갈아 뻗어 나와 공을 지그재그로 몰아붙입니다.
+    // 너무 눕히면 공이 그 위에서 느리게 미끄러지므로 40도쯤으로 세웁니다.
+    addSegment(segments, left, yTop + 70, left + 180, yTop + 220);
+    addSegment(segments, right, yTop + 200, right - 180, yTop + 350);
+    addSegment(segments, left, yTop + 330, left + 180, yTop + 480);
+    return;
+  }
+
+  if (kind === "slots") {
+    // 좁은 세로 통로 여러 개 — 칸막이를 토막 내어 옆 칸으로 건너갈 틈(갈림길)을 둡니다.
+    // 칸막이는 위아래가 모두 열려 있어서 어느 칸에 들어가도 반드시 빠져나옵니다.
+    const dividerCount = 5;
+    const step = (right - left) / (dividerCount + 1);
+
+    for (let index = 1; index <= dividerCount; index += 1) {
+      const x = left + step * index;
+      if (index % 2 === 1) {
+        addSegment(segments, x, yTop + 120, x, yTop + 250);
+        addSegment(segments, x, yTop + 310, x, yTop + 440);
+      } else {
+        addSegment(segments, x, yTop + 190, x, yTop + 320);
+        addSegment(segments, x, yTop + 380, x, yTop + 440);
+      }
+    }
+    return;
+  }
+
   if (kind === "plinko") {
     // 못밭 — 공이 튀면서 좌우로 흩어집니다.
     //
@@ -357,8 +547,6 @@ function addObstacles(
     // 어느 틈이든 MIN_GAP 보다 넓어야 합니다. 가장 큰 공의 지름(32)보다 좁으면
     // 공이 끼어서 경주가 끝나지 않습니다.
     const pegRadius = 11;
-    const left = CENTER - HALF;
-    const right = CENTER + HALF;
 
     for (let row = 0; row < 6; row += 1) {
       const y = yTop + 90 + row * 70;
@@ -380,21 +568,10 @@ function addObstacles(
   }
 
   if (kind === "narrow") {
-    // 미로 — 위쪽 큰 섬에서 좌우로 갈린 공이, 아래쪽 작은 섬 두 개에서 각각 다시 갈립니다.
-    // 그래서 빠져나가는 길이 네 갈래가 되고 공이 골고루 퍼집니다.
-    //
-    // 위아래 섬은 충분히 떨어뜨려야 합니다. 가까우면 위 섬을 타고 온 공이
-    // 아래 섬 위를 그냥 스쳐 지나가서 아래 섬이 아무 역할도 하지 못합니다.
-    addDiamond(segments, CENTER, yTop + 150, BIG_ISLAND_HALF_WIDTH, 55);
-
-    const islandXs = spreadEvenly(
-      CENTER - NARROW_HALF,
-      CENTER + NARROW_HALF,
-      2,
-      SMALL_ISLAND_HALF_WIDTH,
-    );
-    for (const x of islandXs) {
-      addDiamond(segments, x, yTop + 320, SMALL_ISLAND_HALF_WIDTH, 40);
+    // 미로 — 세 층 모두 배치가 매 판 달라집니다. (addMazeRow 참고)
+    // 층 사이 간격을 넉넉히 두어야 위층에서 튕긴 공이 퍼진 뒤 아래층을 만납니다.
+    for (const rowY of [yTop + 145, yTop + 290, yTop + 435]) {
+      addMazeRow(segments, rowY);
     }
     return;
   }
@@ -433,7 +610,7 @@ function addFinish(
   segments: Segment[],
   bounds: Bounds,
   yTop: number,
-): { finishY: number; gate: Gate } {
+): { finishY: number; gateRotors: [Rotor, Rotor] } {
   // 봉 두 개가 나란히 돌 수 있는 방입니다. 방 전체가 왼쪽으로 치우쳐 있습니다.
   const chamberCenter = CENTER - GATE_OFFSET_X;
   const leftPivotX = chamberCenter - GATE_HALF_LENGTH;
@@ -468,42 +645,95 @@ function addFinish(
     recordBounds(bounds, ax, ay, bx, by);
   }
 
-  const gate: Gate = {
-    y: gateY,
-    leftX: leftPivotX,
-    rightX: rightPivotX,
-    halfLength: GATE_HALF_LENGTH,
-    halfThickness: 5,
-    // 시작 각도를 매번 달리해서 첫 판부터 결과가 갈리게 합니다.
-    angle: randomBetween(0, Math.PI * 2),
-    speed: (Math.PI * 2) / (GATE_PERIOD_SECONDS * 60 * SUBSTEPS * TIME_SCALE),
-  };
+  // 방에 들어온 공을 벽에서 떼어 가운데로 몰아 주는 쐐기입니다.
+  //
+  // 벽에 붙은 공은 봉의 끝에 걸립니다. 봉 끝은 회전 반경이 가장 커서 표면 속도가 빠르고,
+  // 봉이 가로일 때 끝의 움직임은 거의 수직입니다. 그래서 공을 아래로 보내는 대신
+  // 위로 쳐올리기만 하고, 공은 떨어졌다가 또 쳐올려지기를 반복합니다.
+  // 회전축에 가까울수록 표면 속도가 느려서 이런 일이 덜합니다.
+  const guideBottomY = gateY - GATE_HALF_LENGTH - 7;
+  addWedge(
+    segments,
+    chamberLeft - 20,
+    chamberLeft + 45,
+    guideBottomY - 65,
+    guideBottomY - 15,
+    guideBottomY,
+  );
+  addWedge(
+    segments,
+    chamberRight + 20,
+    chamberRight - 45,
+    guideBottomY - 65,
+    guideBottomY - 15,
+    guideBottomY,
+  );
 
-  return { finishY: chuteEndY + 24, gate };
+  // 시작 각도를 매번 달리해서 첫 판부터 결과가 갈리게 합니다.
+  const startAngle = randomBetween(0, Math.PI * 2);
+  const speed = spinSpeed(GATE_PERIOD_SECONDS, true);
+
+  // 오른쪽 봉은 왼쪽 봉을 좌우로 뒤집은 각도에서 반대 방향으로 돕니다.
+  // 이렇게 두면 각도를 각자 더해 나가도 대칭이 저절로 유지되어,
+  // 두 봉 끝이 늘 같은 순간에 가운데에서 만납니다. (톱니바퀴가 맞물리는 모습)
+  const gateRotors: [Rotor, Rotor] = [
+    {
+      x: leftPivotX,
+      y: gateY,
+      halfLength: GATE_HALF_LENGTH,
+      halfThickness: 5,
+      angle: startAngle,
+      speed,
+    },
+    {
+      x: rightPivotX,
+      y: gateY,
+      halfLength: GATE_HALF_LENGTH,
+      halfThickness: 5,
+      angle: Math.PI - startAngle,
+      speed: -speed,
+    },
+  ];
+
+  return { finishY: chuteEndY + 24, gateRotors };
 }
 
 /** 코스를 새로 만듭니다. 구간 순서가 매번 달라집니다. */
 export function buildCourse(): Course {
   const segments: Segment[] = [];
   const pegs: Peg[] = [];
+  const rotors: Rotor[] = [];
   const bounds: Bounds = { left: [], right: [] };
 
   // 출발 구간 — 장애물 없이 공이 놓일 자리입니다.
   addWalls(segments, bounds, 0, START_HEIGHT, "plinko");
 
-  // 좁은 통로 구간은 매 판 반드시 넣고, 나머지는 무작위로 골라 섞습니다.
-  // 그래서 코스는 매번 달라지지만 병목은 항상 한 번 나옵니다.
-  const others = shuffle(BAND_KINDS.filter((kind) => kind !== "narrow"));
-  const chosen = shuffle(["narrow" as BandKind, ...others.slice(0, BANDS_PER_COURSE - 1)]);
+  // 구간은 종류도 순서도 매번 무작위입니다. 고정된 것은 마지막 회전 차단봉뿐입니다.
+  //
+  // 배경 색은 구간 "종류" 가 아니라 "순서" 로 정합니다.
+  // 종류마다 색을 정해 두면 하필 비슷한 색끼리 이웃할 때 구분이 안 됩니다.
+  // 순서로 나누면 이웃한 구간의 색이 항상 색상환에서 가장 멀리 떨어집니다.
+  const hueStep = 360 / BANDS_PER_COURSE;
+  const hueOffset = randomBetween(0, 360);
 
+  const bands: CourseBand[] = [];
   let y = START_HEIGHT;
-  for (const kind of chosen) {
+  let bandIndex = 0;
+  for (const kind of shuffle(BAND_KINDS).slice(0, BANDS_PER_COURSE)) {
     addWalls(segments, bounds, y, BAND_HEIGHT, kind);
-    addObstacles(segments, pegs, y, kind);
+    addObstacles(segments, pegs, rotors, y, kind);
+    bands.push({
+      kind,
+      top: y,
+      bottom: y + BAND_HEIGHT,
+      hue: Math.round((hueOffset + bandIndex * hueStep) % 360),
+    });
     y += BAND_HEIGHT;
+    bandIndex += 1;
   }
 
-  const { finishY, gate } = addFinish(segments, bounds, y);
+  const { finishY, gateRotors } = addFinish(segments, bounds, y);
+  rotors.push(...gateRotors);
 
   return {
     width: COURSE_WIDTH,
@@ -513,7 +743,8 @@ export function buildCourse(): Course {
     spawnBottom: START_HEIGHT - 40,
     segments,
     pegs,
-    gate,
+    rotors,
+    bands,
     boundLeft: bounds.left,
     boundRight: bounds.right,
   };
@@ -662,24 +893,23 @@ function collidePeg(marble: Marble, peg: Peg): void {
  * 그래서 닿은 지점에서 봉이 움직이는 속도를 기준으로 튕겨 내야
  * 공이 봉에 얹혀 끌려가거나 옆으로 튕겨 나갑니다.
  */
-function collideGate(marble: Marble, gate: Gate, bar: GateBar): void {
-  const dx = bar.bx - bar.ax;
-  const dy = bar.by - bar.ay;
+function collideRotor(marble: Marble, rotor: Rotor): void {
+  const { ax, ay, bx, by } = rotorEnds(rotor);
+  const dx = bx - ax;
+  const dy = by - ay;
   const lengthSquared = dx * dx + dy * dy;
 
   let t =
-    lengthSquared === 0
-      ? 0
-      : ((marble.x - bar.ax) * dx + (marble.y - bar.ay) * dy) / lengthSquared;
+    lengthSquared === 0 ? 0 : ((marble.x - ax) * dx + (marble.y - ay) * dy) / lengthSquared;
   t = Math.max(0, Math.min(1, t));
 
-  const closestX = bar.ax + t * dx;
-  const closestY = bar.ay + t * dy;
+  const closestX = ax + t * dx;
+  const closestY = ay + t * dy;
 
   let nx = marble.x - closestX;
   let ny = marble.y - closestY;
   const distance = Math.hypot(nx, ny);
-  const minimum = marble.radius + gate.halfThickness;
+  const minimum = marble.radius + rotor.halfThickness;
   if (distance >= minimum) {
     return;
   }
@@ -695,16 +925,16 @@ function collideGate(marble: Marble, gate: Gate, bar: GateBar): void {
   marble.x = closestX + nx * minimum;
   marble.y = closestY + ny * minimum;
 
-  // 닿은 지점에서 봉이 움직이는 속도입니다. (회전축에서의 거리 × 각속도)
-  const armX = closestX - bar.pivotX;
-  const armY = closestY - bar.pivotY;
-  const surfaceVx = -bar.spin * armY;
-  const surfaceVy = bar.spin * armX;
+  // 닿은 지점에서 막대가 움직이는 속도입니다. (회전축에서의 거리 × 각속도)
+  const armX = closestX - rotor.x;
+  const armY = closestY - rotor.y;
+  const surfaceVx = -rotor.speed * armY;
+  const surfaceVy = rotor.speed * armX;
 
   const approaching = (marble.vx - surfaceVx) * nx + (marble.vy - surfaceVy) * ny;
   if (approaching < 0) {
-    marble.vx -= (1 + GATE_BOUNCE) * approaching * nx;
-    marble.vy -= (1 + GATE_BOUNCE) * approaching * ny;
+    marble.vx -= (1 + ROTOR_BOUNCE) * approaching * nx;
+    marble.vy -= (1 + ROTOR_BOUNCE) * approaching * ny;
   }
 }
 
@@ -773,10 +1003,12 @@ function resolveWorld(course: Course, marbles: readonly Marble[]): void {
       collidePeg(marble, peg);
     }
 
-    const gate = course.gate;
-    if (Math.abs(marble.y - gate.y) <= gate.halfLength + marble.radius + gate.halfThickness) {
-      for (const bar of gateBars(gate)) {
-        collideGate(marble, gate, bar);
+    for (const rotor of course.rotors) {
+      if (
+        Math.abs(marble.y - rotor.y) <=
+        rotor.halfLength + marble.radius + rotor.halfThickness
+      ) {
+        collideRotor(marble, rotor);
       }
     }
   }
@@ -826,8 +1058,10 @@ function containMarbles(course: Course, marbles: readonly Marble[]): void {
  */
 export function stepMarbles(course: Course, marbles: Marble[]): number[] {
   for (let sub = 0; sub < SUBSTEPS; sub += 1) {
-    // 차단봉은 공과 상관없이 제 속도로 계속 돕니다.
-    course.gate.angle += course.gate.speed * TIME_SCALE;
+    // 회전 막대는 공과 상관없이 제 속도로 계속 돕니다.
+    for (const rotor of course.rotors) {
+      rotor.angle += rotor.speed * TIME_SCALE;
+    }
 
     for (const marble of marbles) {
       if (marble.finished) {
