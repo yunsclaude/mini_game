@@ -9,7 +9,7 @@ import {
   createMarbles,
   defaultMarbleColor,
   finishRemaining,
-  gateEnds,
+  gateBars,
   leadingMarble,
   stepMarbles,
   COURSE_WIDTH,
@@ -333,22 +333,24 @@ function draw(
     context.fill();
   }
 
-  // 회전 차단봉 — 가로로 누우면 통로가 막힙니다.
+  // 맞물려 도는 회전 차단봉 두 개 — 둘 다 가로로 누우면 통로가 막힙니다.
   const gate = course.gate;
   if (gate.y + gate.halfLength > viewTop && gate.y - gate.halfLength < viewBottom) {
-    const ends = gateEnds(gate);
     context.strokeStyle = GATE_COLOR;
     context.lineWidth = gate.halfThickness * 2;
     context.lineCap = "round";
-    context.beginPath();
-    context.moveTo(ends.ax, ends.ay);
-    context.lineTo(ends.bx, ends.by);
-    context.stroke();
-
     context.fillStyle = GATE_COLOR;
-    context.beginPath();
-    context.arc(gate.x, gate.y, 4.5, 0, Math.PI * 2);
-    context.fill();
+
+    for (const bar of gateBars(gate)) {
+      context.beginPath();
+      context.moveTo(bar.ax, bar.ay);
+      context.lineTo(bar.bx, bar.by);
+      context.stroke();
+
+      context.beginPath();
+      context.arc(bar.pivotX, bar.pivotY, 4.5, 0, Math.PI * 2);
+      context.fill();
+    }
   }
 
   // 도착선

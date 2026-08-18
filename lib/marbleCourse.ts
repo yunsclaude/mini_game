@@ -22,7 +22,8 @@ const HALF = 170;
 
 const START_HEIGHT = 200;
 const BAND_HEIGHT = 520;
-const FINISH_HEIGHT = 520;
+/** 마지막 구간의 높이입니다. 도착선 아래로도 화면이 조금 남도록 넉넉히 잡습니다. */
+const FINISH_HEIGHT = 780;
 /** 벽을 잘게 나누는 간격입니다. 작을수록 곡선이 매끄럽습니다. */
 const ROW_STEP = 40;
 
@@ -35,10 +36,23 @@ const MIN_GAP = 44;
 /** 바깥 벽 범위를 기록하는 간격입니다. */
 const BOUND_STEP = 20;
 
-/** 도착 직전 통로의 반너비입니다. */
-const GATE_HALF_WIDTH = 50;
+/** 도착 통로의 반너비입니다. */
+const CHUTE_HALF_WIDTH = 50;
+/**
+ * 봉 하나의 절반 길이입니다.
+ * 두 회전축의 간격도 이 값의 두 배라서, 두 봉이 그리는 원이 가운데에서 딱 맞닿습니다.
+ * (겹치면 봉끼리 뚫고 지나가는 것처럼 보입니다.)
+ */
+const GATE_HALF_LENGTH = 55;
+/**
+ * 봉 끝과 방 벽 사이에 남는 틈입니다.
+ * 가장 작은 공의 지름(20)보다 좁아야 봉이 가로로 누웠을 때 빈틈 없이 막힙니다.
+ */
+const GATE_TIP_CLEARANCE = 8;
+/** 회전축을 코스 한가운데에서 왼쪽으로 옮기는 거리입니다. */
+const GATE_OFFSET_X = 45;
 /** 회전 차단봉이 한 바퀴 도는 데 걸리는 시간(초)입니다. */
-const GATE_PERIOD_SECONDS = 2;
+const GATE_PERIOD_SECONDS = 3;
 /** 차단봉에 부딪혔을 때 튕기는 정도입니다. */
 const GATE_BOUNCE = 0.4;
 
@@ -80,23 +94,64 @@ export type Peg = {
 };
 
 /**
- * 도착 직전을 막아서는 회전 차단봉입니다.
+ * 도착 직전을 막아서는 회전 차단봉 두 개입니다.
  *
- * 가로로 누우면 통로를 완전히 막고, 세로로 서면 양옆이 열립니다.
- * 그래서 앞서 오던 공도 막힌 타이밍에 도착하면 뒤로 밀립니다.
+ * 좌우에 하나씩 있고 **서로 반대 방향으로** 돕니다. 두 봉이 그리는 원은 가운데에서
+ * 딱 맞닿기만 해서 서로 겹치지 않고, 봉 끝이 같은 순간에 가운데에서 만납니다.
+ * 톱니바퀴 두 개가 맞물려 도는 모습이 됩니다.
+ *
+ * 둘 다 가로로 누우면 방 전체를 막고, 그 사이가 벌어질 때만 공이 빠져나갑니다.
  */
 export type Gate = {
-  x: number;
   y: number;
-  /** 봉의 절반 길이입니다. 통로 반너비보다 조금 길어야 확실히 닫힙니다. */
+  /** 왼쪽 봉의 회전축 x 좌표입니다. */
+  leftX: number;
+  /** 오른쪽 봉의 회전축 x 좌표입니다. */
+  rightX: number;
+  /** 봉 하나의 절반 길이입니다. 회전축 간격의 절반과 같아야 두 원이 맞닿습니다. */
   halfLength: number;
   /** 봉의 굵기(절반)입니다. */
   halfThickness: number;
-  /** 지금 각도(라디안)입니다. 경주가 진행되면서 stepMarbles 가 돌립니다. */
+  /** 왼쪽 봉의 각도(라디안)입니다. 오른쪽 봉은 이것을 좌우로 뒤집은 각도로 돕니다. */
   angle: number;
   /** 한 걸음마다 돌아가는 각도입니다. */
   speed: number;
 };
+
+/** 회전 중인 봉 하나입니다. 그리기와 충돌 계산이 같은 값을 씁니다. */
+export type GateBar = {
+  pivotX: number;
+  pivotY: number;
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  /** 이 봉의 각속도입니다. 두 봉의 부호가 반대라 서로 맞물려 보입니다. */
+  spin: number;
+};
+
+/** 지금 각도에서 두 봉의 위치를 계산합니다. */
+export function gateBars(gate: Gate): [GateBar, GateBar] {
+  const build = (pivotX: number, angle: number, spin: number): GateBar => {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return {
+      pivotX,
+      pivotY: gate.y,
+      ax: pivotX - cos * gate.halfLength,
+      ay: gate.y - sin * gate.halfLength,
+      bx: pivotX + cos * gate.halfLength,
+      by: gate.y + sin * gate.halfLength,
+      spin,
+    };
+  };
+
+  // 오른쪽 봉은 왼쪽 봉을 좌우로 뒤집은 각도라서 반대 방향으로 돕니다.
+  return [
+    build(gate.leftX, gate.angle, gate.speed),
+    build(gate.rightX, Math.PI - gate.angle, -gate.speed),
+  ];
+}
 
 export type Course = {
   width: number;
@@ -132,11 +187,31 @@ export type Marble = {
 };
 
 /** 구간의 종류입니다. 매번 순서를 섞어서 코스가 늘 달라지게 합니다. */
-const BAND_KINDS = ["zigzag", "plinko", "fork", "ramps", "funnel"] as const;
+const BAND_KINDS = ["zigzag", "narrow", "plinko", "fork", "ramps", "funnel"] as const;
 type BandKind = (typeof BAND_KINDS)[number];
 
 /** 한 코스에 넣을 구간의 수입니다. 종류보다 적게 골라야 매번 조합이 달라집니다. */
 const BANDS_PER_COURSE = 4;
+
+/**
+ * 미로 구간의 통로 반너비입니다.
+ * 통로 모양(profileAt)과 섬 배치(addObstacles)가 반드시 같은 값을 봐야 하므로 여기 둡니다.
+ */
+const NARROW_HALF = HALF - 30;
+/** 미로 위쪽 큰 섬의 절반 너비입니다. */
+const BIG_ISLAND_HALF_WIDTH = 62;
+/** 미로 아래쪽 작은 섬의 절반 너비입니다. */
+const SMALL_ISLAND_HALF_WIDTH = 31;
+
+/**
+ * 구간 가운데에서 계속 좁은 상태를 유지하는 모양입니다.
+ *
+ * sin 만 쓰면 한가운데 한 점에서만 좁아졌다가 바로 넓어집니다.
+ * 값을 1 에서 잘라 내면 양 끝에서만 넓어지고 가운데는 쭉 좁은 통로가 됩니다.
+ */
+function plateau(t: number): number {
+  return Math.min(1, Math.sin(t * Math.PI) * 2.2);
+}
 
 /**
  * 구간별 통로의 모양입니다.
@@ -144,10 +219,17 @@ const BANDS_PER_COURSE = 4;
  */
 function profileAt(kind: BandKind, t: number): { center: number; half: number } {
   if (kind === "zigzag") {
+    // 너무 좁으면 공이 한 줄로 서서 내려가 버리므로 굴곡을 느낄 만큼만 좁힙니다.
+    // (폭 150 — 공이 4~7개씩 나란히 지나가면서 벽을 따라 좌우로 밀립니다.)
     return {
-      center: CENTER + 90 * Math.sin(t * Math.PI * 3) * Math.sin(t * Math.PI),
-      half: HALF - 78 * Math.sin(t * Math.PI),
+      center: CENTER + 115 * Math.sin(t * Math.PI * 3) * Math.sin(t * Math.PI),
+      half: HALF - 95 * Math.sin(t * Math.PI),
     };
+  }
+  if (kind === "narrow") {
+    // 미로 구간입니다. 통로 자체는 넓지만 안에 섬이 세 개 있어서
+    // 실제로 지나갈 수 있는 길은 52~78 밖에 되지 않습니다.
+    return { center: CENTER, half: HALF - (HALF - NARROW_HALF) * plateau(t) };
   }
   if (kind === "funnel") {
     return { center: CENTER, half: HALF - 105 * Math.sin(t * Math.PI) };
@@ -216,6 +298,49 @@ function addWalls(
   }
 }
 
+/**
+ * 왼쪽 끝과 오른쪽 끝 사이에 못을 놓되, **모든 틈이 똑같아지도록** 나눕니다.
+ * 벽과 못 사이 틈도 못끼리의 틈과 같아지므로 가장자리에 빈 길이 생기지 않습니다.
+ */
+function spreadEvenly(
+  left: number,
+  right: number,
+  maxCount: number,
+  radius: number,
+): number[] {
+  const gapFor = (count: number): number =>
+    (right - left - count * radius * 2) / (count + 1);
+
+  // 틈이 MIN_GAP 보다 좁아지면 공이 끼므로, 그 전까지만 못을 놓습니다.
+  let count = maxCount;
+  while (count > 0 && gapFor(count) < MIN_GAP) {
+    count -= 1;
+  }
+
+  const gap = gapFor(count);
+  return Array.from(
+    { length: count },
+    (_, index) => left + gap * (index + 1) + radius * (index * 2 + 1),
+  );
+}
+
+/**
+ * 마름모 모양의 섬입니다. 갈림길을 만듭니다.
+ * 위아래가 뾰족해서 공이 어느 쪽으로든 미끄러져 내려갑니다. (평평한 면이 없어야 공이 얹히지 않습니다)
+ */
+function addDiamond(
+  segments: Segment[],
+  cx: number,
+  cy: number,
+  halfWidth: number,
+  halfHeight: number,
+): void {
+  addSegment(segments, cx, cy - halfHeight, cx + halfWidth, cy);
+  addSegment(segments, cx + halfWidth, cy, cx, cy + halfHeight);
+  addSegment(segments, cx, cy + halfHeight, cx - halfWidth, cy);
+  addSegment(segments, cx - halfWidth, cy, cx, cy - halfHeight);
+}
+
 /** 구간 안에 놓이는 장애물입니다. */
 function addObstacles(
   segments: Segment[],
@@ -226,20 +351,50 @@ function addObstacles(
   if (kind === "plinko") {
     // 못밭 — 공이 튀면서 좌우로 흩어집니다.
     //
-    // 못과 벽 사이, 못과 못 사이의 틈은 반드시 MIN_GAP 보다 넓어야 합니다.
-    // 가장 큰 공의 지름(32)보다 좁으면 공이 그 사이에 영구히 끼어서
-    // 경주가 끝나지 않습니다. 실제로 그렇게 막히는 것을 확인하고 넓혔습니다.
+    // 왼쪽부터 일정 간격으로 채우면 오른쪽 끝에 못이 닿지 않는 빈 길이 남아서,
+    // 공이 그쪽으로만 흘러내립니다. 그래서 폭 전체에 **틈이 모두 같도록** 나눕니다.
+    //
+    // 어느 틈이든 MIN_GAP 보다 넓어야 합니다. 가장 큰 공의 지름(32)보다 좁으면
+    // 공이 끼어서 경주가 끝나지 않습니다.
     const pegRadius = 11;
-    const firstX = CENTER - HALF + MIN_GAP + pegRadius;
-    const lastX = CENTER + HALF - MIN_GAP - pegRadius;
-    const spacing = MIN_GAP + pegRadius * 2;
+    const left = CENTER - HALF;
+    const right = CENTER + HALF;
 
     for (let row = 0; row < 6; row += 1) {
       const y = yTop + 90 + row * 70;
-      const offset = row % 2 === 0 ? 0 : spacing / 2;
-      for (let x = firstX + offset; x <= lastX; x += spacing) {
-        pegs.push({ x, y, radius: pegRadius });
+
+      if (row % 2 === 0) {
+        for (const x of spreadEvenly(left, right, 4, pegRadius)) {
+          pegs.push({ x, y, radius: pegRadius });
+        }
+      } else {
+        // 어긋난 줄입니다. 벽에 반쯤 걸친 못을 두어 가장자리에도 빈 길이 없게 합니다.
+        pegs.push({ x: left, y, radius: pegRadius });
+        pegs.push({ x: right, y, radius: pegRadius });
+        for (const x of spreadEvenly(left, right, 3, pegRadius)) {
+          pegs.push({ x, y, radius: pegRadius });
+        }
       }
+    }
+    return;
+  }
+
+  if (kind === "narrow") {
+    // 미로 — 위쪽 큰 섬에서 좌우로 갈린 공이, 아래쪽 작은 섬 두 개에서 각각 다시 갈립니다.
+    // 그래서 빠져나가는 길이 네 갈래가 되고 공이 골고루 퍼집니다.
+    //
+    // 위아래 섬은 충분히 떨어뜨려야 합니다. 가까우면 위 섬을 타고 온 공이
+    // 아래 섬 위를 그냥 스쳐 지나가서 아래 섬이 아무 역할도 하지 못합니다.
+    addDiamond(segments, CENTER, yTop + 150, BIG_ISLAND_HALF_WIDTH, 55);
+
+    const islandXs = spreadEvenly(
+      CENTER - NARROW_HALF,
+      CENTER + NARROW_HALF,
+      2,
+      SMALL_ISLAND_HALF_WIDTH,
+    );
+    for (const x of islandXs) {
+      addDiamond(segments, x, yTop + 320, SMALL_ISLAND_HALF_WIDTH, 40);
     }
     return;
   }
@@ -267,22 +422,45 @@ function addObstacles(
 }
 
 /**
- * 마지막 깔때기와 통로입니다. 좁아지는 지점에 회전 차단봉이 있습니다.
- * 여기를 빠져나온 순서대로 순위가 정해집니다.
+ * 마지막 구간입니다. 깔때기 → 회전 차단봉이 도는 방 → 깔때기 → 도착 통로 순서입니다.
+ * 통로를 빠져나온 순서대로 순위가 정해집니다.
+ *
+ * 봉이 길어서 도착 통로 안에서는 돌 수 없습니다. 그래서 봉이 도는 방을 따로 두고,
+ * 방 벽과 봉 끝의 틈을 공보다 좁게 만들어 봉이 가로로 누우면 완전히 막히게 했습니다.
+ * 방은 코스 한가운데가 아니라 왼쪽으로 치우쳐 있어서 내려오는 길이 한쪽으로 쏠립니다.
  */
 function addFinish(
   segments: Segment[],
   bounds: Bounds,
   yTop: number,
 ): { finishY: number; gate: Gate } {
-  const gateY = yTop + 240;
-  const chuteEndY = gateY + 130;
+  // 봉 두 개가 나란히 돌 수 있는 방입니다. 방 전체가 왼쪽으로 치우쳐 있습니다.
+  const chamberCenter = CENTER - GATE_OFFSET_X;
+  const leftPivotX = chamberCenter - GATE_HALF_LENGTH;
+  const rightPivotX = chamberCenter + GATE_HALF_LENGTH;
+  const chamberHalf = GATE_HALF_LENGTH * 2 + GATE_TIP_CLEARANCE;
+  const chamberLeft = chamberCenter - chamberHalf;
+  const chamberRight = chamberCenter + chamberHalf;
+
+  const chamberTopY = yTop + 180;
+  const chamberBottomY = chamberTopY + 240;
+  const gateY = chamberTopY + 120;
+  const chuteTopY = chamberBottomY + 150;
+  const chuteEndY = chuteTopY + 110;
 
   const walls: [number, number, number, number][] = [
-    [CENTER - HALF, yTop, CENTER - GATE_HALF_WIDTH, gateY],
-    [CENTER + HALF, yTop, CENTER + GATE_HALF_WIDTH, gateY],
-    [CENTER - GATE_HALF_WIDTH, gateY, CENTER - GATE_HALF_WIDTH, chuteEndY],
-    [CENTER + GATE_HALF_WIDTH, gateY, CENTER + GATE_HALF_WIDTH, chuteEndY],
+    // 위쪽 깔때기 — 방 입구로 좁힙니다. 방이 왼쪽에 있어 오른쪽 벽이 더 많이 기웁니다.
+    [CENTER - HALF, yTop, chamberLeft, chamberTopY],
+    [CENTER + HALF, yTop, chamberRight, chamberTopY],
+    // 차단봉이 도는 방
+    [chamberLeft, chamberTopY, chamberLeft, chamberBottomY],
+    [chamberRight, chamberTopY, chamberRight, chamberBottomY],
+    // 아래쪽 깔때기 — 도착 통로로 다시 좁힙니다.
+    [chamberLeft, chamberBottomY, CENTER - CHUTE_HALF_WIDTH, chuteTopY],
+    [chamberRight, chamberBottomY, CENTER + CHUTE_HALF_WIDTH, chuteTopY],
+    // 도착 통로
+    [CENTER - CHUTE_HALF_WIDTH, chuteTopY, CENTER - CHUTE_HALF_WIDTH, chuteEndY],
+    [CENTER + CHUTE_HALF_WIDTH, chuteTopY, CENTER + CHUTE_HALF_WIDTH, chuteEndY],
   ];
 
   for (const [ax, ay, bx, by] of walls) {
@@ -291,10 +469,10 @@ function addFinish(
   }
 
   const gate: Gate = {
-    x: CENTER,
     y: gateY,
-    // 통로보다 조금 길게 만들어야 가로로 누웠을 때 빈틈 없이 막힙니다.
-    halfLength: GATE_HALF_WIDTH + 5,
+    leftX: leftPivotX,
+    rightX: rightPivotX,
+    halfLength: GATE_HALF_LENGTH,
     halfThickness: 5,
     // 시작 각도를 매번 달리해서 첫 판부터 결과가 갈리게 합니다.
     angle: randomBetween(0, Math.PI * 2),
@@ -313,10 +491,13 @@ export function buildCourse(): Course {
   // 출발 구간 — 장애물 없이 공이 놓일 자리입니다.
   addWalls(segments, bounds, 0, START_HEIGHT, "plinko");
 
-  // 다섯 종류 중 네 개를 골라 씁니다. 매번 종류도 순서도 달라집니다.
-  // (다섯 개를 다 쓰면 뒤쪽 공들이 차단봉 앞에 줄 서는 시간까지 더해져 제한 시간을 넘깁니다.)
+  // 좁은 통로 구간은 매 판 반드시 넣고, 나머지는 무작위로 골라 섞습니다.
+  // 그래서 코스는 매번 달라지지만 병목은 항상 한 번 나옵니다.
+  const others = shuffle(BAND_KINDS.filter((kind) => kind !== "narrow"));
+  const chosen = shuffle(["narrow" as BandKind, ...others.slice(0, BANDS_PER_COURSE - 1)]);
+
   let y = START_HEIGHT;
-  for (const kind of shuffle(BAND_KINDS).slice(0, BANDS_PER_COURSE)) {
+  for (const kind of chosen) {
     addWalls(segments, bounds, y, BAND_HEIGHT, kind);
     addObstacles(segments, pegs, y, kind);
     y += BAND_HEIGHT;
@@ -338,17 +519,6 @@ export function buildCourse(): Course {
   };
 }
 
-/** 회전 차단봉의 양 끝 좌표입니다. 그리기와 충돌 계산이 같은 값을 씁니다. */
-export function gateEnds(gate: Gate): { ax: number; ay: number; bx: number; by: number } {
-  const cos = Math.cos(gate.angle);
-  const sin = Math.sin(gate.angle);
-  return {
-    ax: gate.x - cos * gate.halfLength,
-    ay: gate.y - sin * gate.halfLength,
-    bx: gate.x + cos * gate.halfLength,
-    by: gate.y + sin * gate.halfLength,
-  };
-}
 
 /** 인원에 맞는 공 크기입니다. 많을수록 작아집니다. */
 function radiusFor(count: number): number {
@@ -492,17 +662,19 @@ function collidePeg(marble: Marble, peg: Peg): void {
  * 그래서 닿은 지점에서 봉이 움직이는 속도를 기준으로 튕겨 내야
  * 공이 봉에 얹혀 끌려가거나 옆으로 튕겨 나갑니다.
  */
-function collideGate(marble: Marble, gate: Gate): void {
-  const { ax, ay, bx, by } = gateEnds(gate);
-  const dx = bx - ax;
-  const dy = by - ay;
+function collideGate(marble: Marble, gate: Gate, bar: GateBar): void {
+  const dx = bar.bx - bar.ax;
+  const dy = bar.by - bar.ay;
   const lengthSquared = dx * dx + dy * dy;
 
-  let t = lengthSquared === 0 ? 0 : ((marble.x - ax) * dx + (marble.y - ay) * dy) / lengthSquared;
+  let t =
+    lengthSquared === 0
+      ? 0
+      : ((marble.x - bar.ax) * dx + (marble.y - bar.ay) * dy) / lengthSquared;
   t = Math.max(0, Math.min(1, t));
 
-  const closestX = ax + t * dx;
-  const closestY = ay + t * dy;
+  const closestX = bar.ax + t * dx;
+  const closestY = bar.ay + t * dy;
 
   let nx = marble.x - closestX;
   let ny = marble.y - closestY;
@@ -524,10 +696,10 @@ function collideGate(marble: Marble, gate: Gate): void {
   marble.y = closestY + ny * minimum;
 
   // 닿은 지점에서 봉이 움직이는 속도입니다. (회전축에서의 거리 × 각속도)
-  const armX = closestX - gate.x;
-  const armY = closestY - gate.y;
-  const surfaceVx = -gate.speed * armY;
-  const surfaceVy = gate.speed * armX;
+  const armX = closestX - bar.pivotX;
+  const armY = closestY - bar.pivotY;
+  const surfaceVx = -bar.spin * armY;
+  const surfaceVy = bar.spin * armX;
 
   const approaching = (marble.vx - surfaceVx) * nx + (marble.vy - surfaceVy) * ny;
   if (approaching < 0) {
@@ -603,7 +775,9 @@ function resolveWorld(course: Course, marbles: readonly Marble[]): void {
 
     const gate = course.gate;
     if (Math.abs(marble.y - gate.y) <= gate.halfLength + marble.radius + gate.halfThickness) {
-      collideGate(marble, gate);
+      for (const bar of gateBars(gate)) {
+        collideGate(marble, gate, bar);
+      }
     }
   }
 }
